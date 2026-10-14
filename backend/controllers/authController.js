@@ -1,10 +1,11 @@
 
 const User = require("../models/user");
 const bcrypt = require("bcryptjs");
+const jwt = require("jsonwebtoken");
 
 const register = async (req, res) => {
   try {
-    const { name, email, password, role, studentId, department } = req.body;
+    const { name, email, password, studentId, department } = req.body;
 
     if (!name || !email || !password) {
       return res.status(400).json({
@@ -12,7 +13,11 @@ const register = async (req, res) => {
       });
     }
 
-    const existingUser = await User.findOne({ email });
+    const normalizedEmail = email.trim().toLowerCase();
+
+    const existingUser = await User.findOne({
+      email: normalizedEmail
+    });
 
     if (existingUser) {
       return res.status(409).json({
@@ -23,15 +28,15 @@ const register = async (req, res) => {
     const hashedPassword = await bcrypt.hash(password, 10);
 
     const user = await User.create({
-      name,
-      email,
+      name: name.trim(),
+      email: normalizedEmail,
       password: hashedPassword,
-      role: role || "student",
+      role: "student",
       studentId,
       department
     });
 
-    res.status(201).json({
+    return res.status(201).json({
       message: "Registration successful",
       user: {
         id: user._id,
@@ -41,14 +46,17 @@ const register = async (req, res) => {
       }
     });
   } catch (error) {
-    res.status(500).json({
-      message: "Registration failed",
-      error: error.message
+    if (error.code === 11000) {
+      return res.status(409).json({
+        message: "Email already registered"
+      });
+    }
+
+    return res.status(500).json({
+      message: "Registration failed"
     });
   }
 };
-
-const jwt = require("jsonwebtoken");
 
 const login = async (req, res) => {
   try {
@@ -60,8 +68,14 @@ const login = async (req, res) => {
       });
     }
 
+    if (!process.env.JWT_SECRET) {
+      return res.status(500).json({
+        message: "Authentication is not configured"
+      });
+    }
+
     const user = await User.findOne({
-      email: email.toLowerCase().trim()
+      email: email.trim().toLowerCase()
     });
 
     if (!user) {
@@ -81,12 +95,6 @@ const login = async (req, res) => {
       });
     }
 
-    if (!process.env.JWT_SECRET) {
-      return res.status(500).json({
-        message: "Server authentication is not configured"
-      });
-    }
-
     const token = jwt.sign(
       {
         id: user._id.toString(),
@@ -98,7 +106,7 @@ const login = async (req, res) => {
       }
     );
 
-    res.status(200).json({
+    return res.status(200).json({
       message: "Login successful",
       token,
       user: {
@@ -109,12 +117,10 @@ const login = async (req, res) => {
       }
     });
   } catch (error) {
-    res.status(500).json({
+    return res.status(500).json({
       message: "Login failed"
     });
   }
 };
 
-
-module.exports = { register };
 module.exports = { register, login };
