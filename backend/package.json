@@ -5,7 +5,9 @@
   "main": "server.js",
   "scripts": {
     "start": "node server.js",
-    "dev": "nodemon server.js"
+    "dev": "nodemon server.js",
+    "setup:admin": "node scripts/setupInitialAdmin.js",
+    "recover:admin": "node scripts/recoverAdminAccount.js"
   },
   "dependencies": {
     "bcryptjs": "^3.0.2",

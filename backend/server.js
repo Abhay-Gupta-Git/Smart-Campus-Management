@@ -1,51 +1,57 @@
+require("dotenv").config();
 
 const express = require("express");
 const cors = require("cors");
-require("dotenv").config();
-
 const connectDB = require("./config/db");
 
-const authRoutes = require("./routes/authRoutes");
-const studentRoutes = require("./routes/studentRoutes");
-const attendanceRoutes = require("./routes/attendanceRoutes");
-const roomRoutes = require("./routes/roomRoutes");
-const bookingRoutes = require("./routes/bookingRoutes");
-
 const app = express();
+const port = process.env.PORT || 5000;
+const apiRoutes = {
+  auth: "authRoutes",
+  students: "studentRoutes",
+  faculty: "facultyRoutes",
+  classes: "classRoutes",
+  attendance: "attendanceRoutes",
+  rooms: "roomRoutes",
+  bookings: "bookingRoutes",
+  notices: "noticeRoutes",
+  complaints: "complaintRoutes",
+  dashboard: "dashboardRoutes",
+  "admin/users": "adminUserRoutes",
+};
 
-app.use(cors({
-  origin: process.env.CLIENT_URL || "http://localhost:5173"
-}));
-
+app.use(cors({ origin: process.env.CLIENT_URL || "http://localhost:5173" }));
 app.use(express.json());
 
-app.get("/", (req, res) => {
-  res.send("Smart Campus Management System API Running");
-});
-
 app.get("/api/health", (req, res) => {
-  res.json({ message: "API is healthy" });
+  return res.json({ ok: true, service: "Smart Campus API" });
 });
 
-app.use("/api/auth", authRoutes);
-app.use("/api/students", studentRoutes);
-app.use("/api/attendance", attendanceRoutes);
-app.use("/api/rooms", roomRoutes);
-app.use("/api/bookings", bookingRoutes);
+Object.entries(apiRoutes).forEach(([path, routeName]) => {
+  app.use(`/api/${path}`, require(`./routes/${routeName}`));
+});
 
-const PORT = process.env.PORT || 5000;
+app.use((error, req, res, next) => {
+  console.error(error);
+  return res.status(error.status || 500).json({
+    message: error.message || "Server error",
+  });
+});
 
 async function startServer() {
   try {
     await connectDB();
-
-    app.listen(PORT, () => {
-      console.log(`Server running on port ${PORT}`);
+    app.listen(port, () => {
+      console.log(`API listening on port ${port}`);
     });
   } catch (error) {
-    console.error("Server startup failed:", error.message);
+    console.error(`Server startup failed: ${error.message}`);
     process.exit(1);
   }
 }
 
-startServer();
+if (require.main === module) {
+  startServer();
+}
+
+module.exports = app;
