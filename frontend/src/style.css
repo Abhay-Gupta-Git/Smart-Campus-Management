@@ -12,7 +12,6 @@
   margin-right: 6px;
   padding: 6px 9px;
 }
-
 .table-action:hover {
   background: #f1efff;
 }
@@ -29,6 +28,7 @@
   align-items: center;
   background: #e9f8f1;
   border: 1px solid #c7eedc;
+  
   border-radius: 9px;
   color: #17734f;
   display: flex;
