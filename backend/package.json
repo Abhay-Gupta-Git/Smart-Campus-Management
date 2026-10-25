@@ -9,6 +9,7 @@
     "setup:admin": "node scripts/setupInitialAdmin.js",
     "recover:admin": "node scripts/recoverAdminAccount.js"
   },
+
   "dependencies": {
     "bcryptjs": "^3.0.2",
     "cors": "^2.8.5",

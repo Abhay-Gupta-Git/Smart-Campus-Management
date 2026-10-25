@@ -7,6 +7,7 @@ const connectDB = require("./config/db");
 const app = express();
 const port = process.env.PORT || 5000;
 const apiRoutes = {
+  
   auth: "authRoutes",
   students: "studentRoutes",
   faculty: "facultyRoutes",

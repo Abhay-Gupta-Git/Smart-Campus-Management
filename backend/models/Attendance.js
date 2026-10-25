@@ -5,7 +5,7 @@ const attendanceSchema = new mongoose.Schema(
     campusClass: {
       type: mongoose.Schema.Types.ObjectId,
       ref: "CampusClass",
-      default: null,
+      default: null ,
     },
     student: {
       type: mongoose.Schema.Types.ObjectId,

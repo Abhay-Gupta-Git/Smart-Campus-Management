@@ -13,7 +13,7 @@ const campusClassSchema = new mongoose.Schema(
     room: {
       type: mongoose.Schema.Types.ObjectId,
       ref: "Room",
-      required: true,
+      required: true ,
     },
     day: {
       type: String,

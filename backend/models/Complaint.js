@@ -8,7 +8,7 @@ const complaintSchema = new mongoose.Schema(
     status: {
       type: String,
       enum: ["Open", "In progress", "Resolved"],
-      default: "Open",
+      default: "Open" ,
     },
     submittedBy: {
       type: mongoose.Schema.Types.ObjectId,

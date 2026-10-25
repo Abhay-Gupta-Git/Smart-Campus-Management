@@ -24,7 +24,6 @@ async function promptForHiddenValue(prompt) {
   input.setRawMode(true);
   input.setEncoding("utf8");
   input.resume();
-
   return new Promise((resolve, reject) => {
     let value = "";
 

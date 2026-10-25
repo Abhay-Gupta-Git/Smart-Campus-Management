@@ -9,7 +9,7 @@ const roomSchema = new mongoose.Schema(
     facilities: [String],
     available: { type: Boolean, default: true },
   },
-  { timestamps: true },
+  { timestamps: true } ,
 );
 
 module.exports = mongoose.model("Room", roomSchema);

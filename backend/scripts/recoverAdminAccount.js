@@ -292,7 +292,6 @@ async function recoverConfiguredAdmin() {
     process.exitCode = 1;
   } finally {
     delete process.env.ADMIN_RECOVERY_SECRET;
-
     if (connectedToDatabase) {
       await mongoose.disconnect().catch(() => {});
     }

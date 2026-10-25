@@ -8,7 +8,7 @@ const noticeSchema = new mongoose.Schema(
     audience: { type: String, default: "all" },
     author: { type: mongoose.Schema.Types.ObjectId, ref: "User" },
   },
-  { timestamps: true },
+  { timestamps: true } ,
 );
 
 module.exports = mongoose.model("Notice", noticeSchema);
