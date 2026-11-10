@@ -6,9 +6,14 @@ const Booking = require("../models/Booking");
 const Notice = require("../models/Notice");
 const Complaint = require("../models/Complaint");
 const CampusClass = require("../models/CampusClass");
-const { protect } = require("../middleware/authMiddleware");
+const { protect, authorizeRoles } = require("../middleware/authMiddleware");
+const { getAnalytics } = require("../controllers/analyticsController");
+const { getRoomForecast } = require("../controllers/roomForecastController");
 
 const router = express.Router();
+
+router.get("/analytics", protect, authorizeRoles("admin"), getAnalytics);
+router.get("/analytics/room-forecast", protect, authorizeRoles("admin"), getRoomForecast);
 
 function getNoticeFilter(role) {
   return {

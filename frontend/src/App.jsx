@@ -2,6 +2,7 @@
 import {
   AlertCircle,
   ArrowUpRight,
+  BarChart3,
   Bell,
   Building2,
   CalendarDays,
@@ -16,6 +17,7 @@ import {
   MessageSquareWarning,
   Plus,
   Search,
+  Sparkles,
   Users,
 } from "lucide-react";
      
@@ -23,12 +25,14 @@ const API_URL = import.meta.env.VITE_API_URL || "http://localhost:5000/api";
 
 const navigationItems = [
   ["Overview", LayoutDashboard],
+  ["Analytics", BarChart3],
   ["Students", Users],
   ["Faculty", Users],
   ["Classes", ClipboardCheck],
   ["Attendance", ClipboardCheck],
   ["Classrooms", DoorOpen],
   ["Room bookings", CalendarDays],
+  ["Room recommendations", Sparkles],
   ["Notices", Megaphone],
   ["Complaints", MessageSquareWarning],
 ];
@@ -170,6 +174,7 @@ function App() {
       setDashboard(updatedDashboard);
     } catch (error) {
       setErrorMessage(error.message);
+      throw error;
     }
   }
 
@@ -231,6 +236,10 @@ function App() {
 
           {page === "Overview" ? (
             <DashboardPage dashboard={dashboard} onNavigate={setPage} />
+          ) : page === "Analytics" && user?.role === "admin" ? (
+            <AnalyticsDashboardPage token={token} />
+          ) : page === "Room recommendations" ? (
+            <RoomRecommendationPage token={token} />
           ) : (
             <ResourceTable
               page={page}
@@ -245,11 +254,11 @@ function App() {
                   "Faculty",
                   "Students",
                   "Classrooms",
-                  "Room bookings",
                   "Notices",
                   "Complaints",
                 ].includes(page)
               }
+              userId={user?.id || user?._id}
               onEdit={(record) => {
                 setEditingRecord(record);
                 setIsModalOpen(true);
@@ -291,6 +300,27 @@ function App() {
                   setErrorMessage(error.message);
                 }
               }}
+              onBookingDecision={async (record, status) => {
+                try {
+                  await requestApi(`/bookings/${record._id}/status`, token, {
+                    method: "PATCH",
+                    body: JSON.stringify({ status }),
+                  });
+                  await loadRecords(page);
+                  setSuccessMessage(`Booking ${status.toLowerCase()}.`);
+                } catch (error) {
+                  setErrorMessage(error.message);
+                }
+              }}
+              onBookingCancel={async (record) => {
+                try {
+                  await requestApi(`/bookings/${record._id}/cancel`, token, { method: "PATCH" });
+                  await loadRecords(page);
+                  setSuccessMessage("Booking request cancelled.");
+                } catch (error) {
+                  setErrorMessage(error.message);
+                }
+              }}
             />
           )}
         </section>
@@ -314,12 +344,14 @@ function Sidebar({ activePage, dashboard, user, onNavigate, onLogout }) {
   const allowedPages = {
     admin: [
       "Overview",
+      "Analytics",
       "Students",
       "Faculty",
       "Classes",
       "Attendance",
       "Classrooms",
       "Room bookings",
+      "Room recommendations",
       "Notices",
       "Complaints",
     ],
@@ -330,10 +362,11 @@ function Sidebar({ activePage, dashboard, user, onNavigate, onLogout }) {
       "Attendance",
       "Classrooms",
       "Room bookings",
+      "Room recommendations",
       "Notices",
       "Complaints",
     ],
-    student: ["Overview", "Classes", "Attendance", "Notices", "Complaints"],
+    student: ["Overview", "Classes", "Attendance", "Classrooms", "Room bookings", "Room recommendations", "Notices", "Complaints"],
   }[role] || ["Overview"];
 
   return (
@@ -425,6 +458,10 @@ function PageHeading({ page, user, canCreateRecord, onCreate }) {
   const description =
     page === "Overview"
       ? "Here's what's happening across your campus today."
+      : page === "Analytics"
+        ? "Campus activity and resource use from recorded data."
+      : page === "Room recommendations"
+        ? "Find a room that fits your group and schedule."
       : `Manage and keep track of ${page.toLowerCase()}.`;
 
   return (
@@ -448,6 +485,488 @@ function PageHeading({ page, user, canCreateRecord, onCreate }) {
         <button className="primary" onClick={onCreate}>
           <Plus size={17} /> Add {getRecordLabel(page)}
         </button>
+      )}
+    </div>
+  );
+}
+
+function AnalyticsDashboardPage({ token }) {
+  const [range, setRange] = useState("30d");
+  const [analytics, setAnalytics] = useState(null);
+  const [error, setError] = useState("");
+  const [isLoading, setIsLoading] = useState(true);
+
+  useEffect(() => {
+    let active = true;
+    setIsLoading(true);
+    setError("");
+    requestApi(`/dashboard/analytics?range=${range}`, token)
+      .then((result) => { if (active) setAnalytics(result); })
+      .catch((requestError) => { if (active) setError(requestError.message); })
+      .finally(() => { if (active) setIsLoading(false); });
+    return () => { active = false; };
+  }, [range, token]);
+
+  if (isLoading && !analytics) return <div className="panel analytics-message">Loading analytics…</div>;
+  if (error && !analytics) return <div className="error" role="alert">{error}</div>;
+  if (!analytics) return null;
+
+  const campusMetrics = [
+    ["Students", analytics.totals.students, Users, "#7657df"],
+    ["Faculty", analytics.totals.faculty, ClipboardCheck, "#27a58a"],
+    ["Rooms", analytics.totals.rooms, DoorOpen, "#f2a94b"],
+    ["Classes", analytics.totals.classes, CalendarDays, "#4f8fe8"],
+  ];
+  const bookingMetrics = [
+    ["Total bookings", analytics.bookings.total, CalendarDays, "#4f8fe8"],
+    ["Pending", analytics.bookings.Pending, Clock3, "#f2a94b"],
+    ["Approved", analytics.bookings.Approved, CheckCircle2, "#27a58a"],
+    ["Rejected", analytics.bookings.Rejected, AlertCircle, "#d35c6a"],
+    ["Cancelled", analytics.bookings.Cancelled, CalendarDays, "#858899"],
+  ];
+  const complaintMetrics = [
+    ["Total complaints", analytics.complaints.total, MessageSquareWarning, "#4f8fe8"],
+    ["Open", analytics.complaints.Open, AlertCircle, "#d35c6a"],
+    ["In progress", analytics.complaints["In progress"], Clock3, "#f2a94b"],
+    ["Resolved", analytics.complaints.Resolved, CheckCircle2, "#27a58a"],
+  ];
+  const attendanceMetrics = [
+    ["Attendance records", analytics.attendance.total, ClipboardCheck, "#4f8fe8"],
+    ["Present", analytics.attendance.present, CheckCircle2, "#27a58a"],
+    ["Late", analytics.attendance.late, Clock3, "#f2a94b"],
+    ["Absent", analytics.attendance.absent, AlertCircle, "#d35c6a"],
+    ["Attendance rate", `${analytics.attendance.attendanceRate}%`, BarChart3, "#7657df"],
+  ];
+
+  return (
+    <div className="analytics-page">
+      <div className="analytics-toolbar">
+        <span>Reporting period</span>
+        <select aria-label="Analytics date range" value={range} onChange={(event) => setRange(event.target.value)}>
+          <option value="7d">Last 7 days</option>
+          <option value="30d">Last 30 days</option>
+          <option value="all">All time</option>
+        </select>
+        {isLoading && <small>Updating…</small>}
+      </div>
+      {error && <div className="error" role="alert">{error}</div>}
+
+      <AnalyticsMetricSection title="Campus totals" metrics={campusMetrics} />
+      <AnalyticsMetricSection title={`Bookings · ${rangeLabel(range)}`} metrics={bookingMetrics} />
+
+      <div className="analytics-grid">
+        <section className="panel analytics-chart-panel">
+          <PanelHeading
+            title="Booking trends"
+            subtitle={`${analytics.periodGranularity === "month" ? "Monthly" : "Daily"} booking dates, grouped by status`}
+          />
+          <BookingTrendChart data={analytics.bookingTrend} granularity={analytics.periodGranularity} />
+        </section>
+        <section className="panel analytics-chart-panel">
+          <PanelHeading title={`Complaints · ${rangeLabel(range)}`} subtitle="Current status of complaints created in this period" />
+          {analytics.complaints.total ? (
+            <AnalyticsBars rows={[
+              ["Open", analytics.complaints.Open, "#d35c6a"],
+              ["In progress", analytics.complaints["In progress"], "#f2a94b"],
+              ["Resolved", analytics.complaints.Resolved, "#27a58a"],
+            ]} />
+          ) : <div className="analytics-empty">No complaint records for this period.</div>}
+        </section>
+      </div>
+
+      <section className="panel analytics-usage-panel">
+        <PanelHeading title="Room usage" subtitle={`Approved bookings and scheduled hours · ${rangeLabel(range)}`} />
+        {analytics.roomUsage.length ? (
+          <div className="analytics-table-wrap">
+            <table className="analytics-table">
+              <thead><tr><th>Room</th><th>Building</th><th>Type</th><th>Approved bookings</th><th>Booked hours</th></tr></thead>
+              <tbody>{analytics.roomUsage.map((room) => (
+                <tr key={room.roomId}>
+                  <td><strong>{room.name}</strong></td><td>{room.building}</td><td>{room.type}</td>
+                  <td>{room.approvedBookings}</td><td>{room.bookedHours}</td>
+                </tr>
+              ))}</tbody>
+            </table>
+          </div>
+        ) : <div className="analytics-empty">No approved room bookings for this period.</div>}
+      </section>
+
+      <AnalyticsMetricSection title={`Complaint totals · ${rangeLabel(range)}`} metrics={complaintMetrics} />
+      <AnalyticsMetricSection title={`Attendance · ${rangeLabel(range)}`} metrics={attendanceMetrics} />
+      <section className="panel analytics-chart-panel">
+        <PanelHeading title="Attendance breakdown" subtitle="Present and late count as attended" />
+        {analytics.attendance.total ? (
+          <AnalyticsBars rows={[
+            ["Present", analytics.attendance.present, "#27a58a"],
+            ["Late", analytics.attendance.late, "#f2a94b"],
+            ["Absent", analytics.attendance.absent, "#d35c6a"],
+          ]} />
+        ) : <div className="analytics-empty">No attendance records for this period.</div>}
+      </section>
+      <RoomForecastPanel token={token} />
+    </div>
+  );
+}
+
+function rangeLabel(range) {
+  return range === "all" ? "all time" : range === "7d" ? "last 7 days" : "last 30 days";
+}
+
+function AnalyticsMetricSection({ title, metrics }) {
+  return (
+    <section className="analytics-section">
+      <h2>{title}</h2>
+      <div className="analytics-metrics">
+        {metrics.map(([label, value, Icon, color]) => (
+          <MetricCard key={label} label={label} value={value} Icon={Icon} color={color} />
+        ))}
+      </div>
+    </section>
+  );
+}
+
+function BookingTrendChart({ data, granularity }) {
+  const chartData = data.slice(-24);
+  if (!chartData.length || chartData.every((item) => item.total === 0)) {
+    return <div className="analytics-empty">No booking records for this period.</div>;
+  }
+  const width = 800;
+  const height = 250;
+  const left = 42;
+  const right = 14;
+  const top = 15;
+  const bottom = 37;
+  const plotHeight = height - top - bottom;
+  const plotWidth = width - left - right;
+  const maxValue = Math.max(1, ...chartData.map((item) => item.total));
+  const slotWidth = plotWidth / chartData.length;
+  const barWidth = Math.min(25, slotWidth * 0.62);
+  const colors = { Approved: "#27a58a", Pending: "#f2a94b", Rejected: "#d35c6a", Cancelled: "#a0a2af" };
+  const statuses = Object.keys(colors);
+  const labelStep = Math.max(1, Math.ceil(chartData.length / 8));
+
+  return (
+    <div className="booking-chart-wrap">
+      <svg className="booking-chart" viewBox={`0 0 ${width} ${height}`} role="img" aria-label="Booking counts over time by status">
+        {[0, 0.5, 1].map((fraction) => {
+          const y = top + plotHeight * (1 - fraction);
+          return <g key={fraction}><line x1={left} y1={y} x2={width - right} y2={y} stroke="#eceef3" /><text x={left - 8} y={y + 4} textAnchor="end">{Math.round(maxValue * fraction)}</text></g>;
+        })}
+        {chartData.map((item, index) => {
+          const x = left + index * slotWidth + (slotWidth - barWidth) / 2;
+          let yBottom = top + plotHeight;
+          return (
+            <g key={item.period}>
+              {statuses.map((status) => {
+                const count = item[status] || 0;
+                if (!count) return null;
+                const barHeight = (count / maxValue) * plotHeight;
+                yBottom -= barHeight;
+                return <rect key={status} x={x} y={yBottom} width={barWidth} height={barHeight} fill={colors[status]}><title>{`${item.period}: ${count} ${status.toLowerCase()}`}</title></rect>;
+              })}
+              {(index % labelStep === 0 || index === chartData.length - 1) && (
+                <text x={x + barWidth / 2} y={height - 12} textAnchor="middle">{granularity === "month" ? item.period : item.period.slice(5)}</text>
+              )}
+            </g>
+          );
+        })}
+      </svg>
+      <div className="analytics-legend">
+        {statuses.map((status) => <span key={status}><i style={{ background: colors[status] }} />{status}</span>)}
+      </div>
+    </div>
+  );
+}
+
+function AnalyticsBars({ rows }) {
+  const maxValue = Math.max(1, ...rows.map(([, value]) => value));
+  return (
+    <div className="analytics-bars">
+      {rows.map(([label, value, color]) => (
+        <div className="analytics-bar-row" key={label}>
+          <span>{label}</span>
+          <div className="analytics-bar-track"><i style={{ width: `${(value / maxValue) * 100}%`, background: color }} /></div>
+          <strong>{value}</strong>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function RoomForecastPanel({ token }) {
+  const [data, setData] = useState(null);
+  const [error, setError] = useState("");
+  const [isLoading, setIsLoading] = useState(true);
+
+  useEffect(() => {
+    let active = true;
+    requestApi("/dashboard/analytics/room-forecast", token)
+      .then((result) => { if (active) setData(result); })
+      .catch((requestError) => { if (active) setError(requestError.message); })
+      .finally(() => { if (active) setIsLoading(false); });
+    return () => { active = false; };
+  }, [token]);
+
+  if (isLoading) return <section className="panel analytics-message">Loading room usage forecast…</section>;
+  if (error) return <div className="error" role="alert">{error}</div>;
+  if (!data) return null;
+
+  const actualWeekdays = data.historicalPatterns.weekdays;
+  const actualSlots = data.historicalPatterns.timeSlots;
+  const actualBuildings = data.historicalPatterns.buildings.slice(0, 6);
+  const actualTypes = data.historicalPatterns.roomTypes;
+  const forecastDays = new Map();
+  for (const period of data.forecast.periods) {
+    const item = forecastDays.get(period.date) || { label: `${period.day.slice(0, 3)} ${period.date.slice(5)}`, hours: 0 };
+    item.hours += period.expectedBookedHours;
+    forecastDays.set(period.date, item);
+  }
+  const highPeriods = data.forecast.periods.filter((period) => period.demandLevel === "High demand").slice(0, 5);
+  const lowPeriods = data.forecast.periods.filter((period) => period.demandLevel === "Low demand").slice(0, 5);
+
+  return (
+    <section className="forecast-module">
+      <div className="forecast-module-heading">
+        <div>
+          <span className="forecast-kicker">ADMIN FORECASTING</span>
+          <h2>Room Usage Forecasting</h2>
+          <p>Historical actuals and rule-based estimates, shown separately.</p>
+        </div>
+        <span className="forecast-window">Historical window · {data.history.startDate} to {data.history.endDate}</span>
+      </div>
+
+      <div className="panel forecast-actual-panel">
+        <PanelHeading title="Historical actuals" subtitle="Approved bookings recorded in the trailing 90 days" />
+        <div className="forecast-summary">
+          <div><strong>{data.history.approvedBookings}</strong><span>Approved bookings</span></div>
+          <div><strong>{data.history.bookedHours}</strong><span>Booked hours</span></div>
+          <div><strong>{data.history.activeWeeks}</strong><span>Weeks with bookings</span></div>
+        </div>
+        {data.history.approvedBookings ? (
+          <div className="forecast-pattern-grid">
+            <ForecastPattern title="Usage by weekday" subtitle="Average actual booked hours per weekday" rows={actualWeekdays.map((row) => [row.day, row.avgBookedHours, "#7657df"])} />
+            <ForecastPattern title="Usage by time slot" subtitle="Actual approved hours in each slot" rows={actualSlots.map((row) => [`${row.label} · ${row.startTime}–${row.endTime}`, row.bookedHours, "#4f8fe8"])} />
+            <ForecastPattern title="Usage by building" subtitle="Actual approved booked hours" rows={actualBuildings.map((row) => [row.building, row.bookedHours, "#27a58a"])} emptyText="No building usage recorded." />
+            <ForecastPattern title="Usage by room type" subtitle="Actual approved booked hours" rows={actualTypes.map((row) => [row.roomType, row.bookedHours, "#f2a94b"])} emptyText="No room-type usage recorded." />
+          </div>
+        ) : (
+          <div className="analytics-empty">{data.noDataMessage || "No approved booking data is available."}</div>
+        )}
+      </div>
+
+      {data.forecast.available ? (
+        <div className="panel forecast-prediction-panel">
+          <div className="forecast-section-heading">
+            <div>
+              <span className="forecast-predicted-label">PREDICTION · NEXT 7 DAYS</span>
+              <h3>Expected room demand</h3>
+              <p>Forecast from historical averages for the same weekday and time slot.</p>
+            </div>
+            <span>{data.forecast.startDate} to {data.forecast.endDate}</span>
+          </div>
+          <ForecastDailyChart days={[...forecastDays.values()]} />
+          <div className="forecast-demand-grid">
+            <div className="forecast-demand-list high">
+              <h4>Predicted high-demand periods</h4>
+              {highPeriods.length ? highPeriods.map((period) => <ForecastPeriod key={`${period.date}-${period.slot}`} period={period} />) : <p>No period exceeded the current historical baseline.</p>}
+            </div>
+            <div className="forecast-demand-list low">
+              <h4>Predicted low-demand periods</h4>
+              {lowPeriods.length ? lowPeriods.map((period) => <ForecastPeriod key={`${period.date}-${period.slot}`} period={period} />) : <p>No low-demand periods identified in this forecast.</p>}
+            </div>
+          </div>
+        </div>
+      ) : (
+        <div className="panel forecast-insufficient" role="status">
+          <AlertCircle size={21} />
+          <div><strong>Forecast unavailable</strong><p>{data.insufficientHistoryMessage}</p></div>
+        </div>
+      )}
+
+      <div className="panel forecast-rooms-panel">
+        <PanelHeading title="Room usage share" subtitle="Per-room share of approved booked hours in the history window" />
+        <p className="forecast-limitation">{data.utilizationDefinition} The schema does not store operating hours or occupancy, so this is a booked-hour share, not seat occupancy or schedule-capacity utilization.</p>
+        {data.roomUsage.length ? (
+          <div className="analytics-table-wrap">
+            <table className="analytics-table">
+              <thead><tr><th>Room</th><th>Building</th><th>Type</th><th>Approved bookings</th><th>Booked hours</th><th>Booked-hour share</th></tr></thead>
+              <tbody>{data.roomUsage.map((room) => <tr key={room.roomId}>
+                <td><strong>{room.name}</strong></td><td>{room.building}</td><td>{room.type}</td>
+                <td>{room.approvedBookings}</td><td>{room.bookedHours}</td><td>{room.utilizationPercent}%</td>
+              </tr>)}</tbody>
+            </table>
+          </div>
+        ) : <div className="analytics-empty">No rooms are available for usage reporting.</div>}
+      </div>
+    </section>
+  );
+}
+
+function ForecastPattern({ title, subtitle, rows, emptyText }) {
+  return (
+    <section className="panel forecast-pattern">
+      <PanelHeading title={title} subtitle={subtitle} />
+      {rows.length ? <AnalyticsBars rows={rows} /> : <div className="analytics-empty">{emptyText || "No booking data."}</div>}
+    </section>
+  );
+}
+
+function ForecastDailyChart({ days }) {
+  if (!days.length) return <div className="analytics-empty">No predictions available.</div>;
+  const width = 760;
+  const height = 190;
+  const left = 44;
+  const bottom = 35;
+  const top = 12;
+  const maxHours = Math.max(1, ...days.map((day) => day.hours));
+  const plotHeight = height - top - bottom;
+  const slot = (width - left - 12) / days.length;
+  const barWidth = Math.min(44, slot * 0.56);
+  return (
+    <div className="forecast-chart-wrap">
+      <svg className="forecast-chart" viewBox={`0 0 ${width} ${height}`} role="img" aria-label="Predicted room usage hours for the next seven days">
+        {[0, 0.5, 1].map((fraction) => {
+          const y = top + plotHeight * (1 - fraction);
+          return <g key={fraction}><line x1={left} y1={y} x2={width - 12} y2={y} stroke="#eceef3" /><text x={left - 8} y={y + 4} textAnchor="end">{(maxHours * fraction).toFixed(1)}</text></g>;
+        })}
+        {days.map((day, index) => {
+          const barHeight = (day.hours / maxHours) * plotHeight;
+          const x = left + index * slot + (slot - barWidth) / 2;
+          const y = top + plotHeight - barHeight;
+          return <g key={day.label}><rect x={x} y={y} width={barWidth} height={barHeight} fill="#8a72e4" rx="3"><title>{`${day.label}: ${day.hours.toFixed(1)} predicted booked hours`}</title></rect><text x={x + barWidth / 2} y={height - 12} textAnchor="middle">{day.label}</text></g>;
+        })}
+      </svg>
+    </div>
+  );
+}
+
+function ForecastPeriod({ period }) {
+  return <div className="forecast-period-row"><strong>{period.day} · {period.slot}</strong><span>{period.date}</span><em>{period.expectedBookedHours.toFixed(1)} predicted hrs</em></div>;
+}
+
+function RoomRecommendationPage({ token }) {
+  const today = new Date(Date.now() - new Date().getTimezoneOffset() * 60000)
+    .toISOString()
+    .slice(0, 10);
+  const [criteria, setCriteria] = useState({
+    capacity: "",
+    type: "Classroom",
+    building: "",
+    date: today,
+    startTime: "09:00",
+    endTime: "10:00",
+  });
+  const [recommendations, setRecommendations] = useState(null);
+  const [message, setMessage] = useState("");
+  const [error, setError] = useState("");
+  const [isLoading, setIsLoading] = useState(false);
+
+  function updateCriteria(event) {
+    setCriteria((values) => ({ ...values, [event.target.name]: event.target.value }));
+  }
+
+  async function handleSubmit(event) {
+    event.preventDefault();
+    setIsLoading(true);
+    setError("");
+    setMessage("");
+    setRecommendations(null);
+    try {
+      const query = new URLSearchParams({
+        capacity: criteria.capacity,
+        type: criteria.type,
+        date: criteria.date,
+        startTime: criteria.startTime,
+        endTime: criteria.endTime,
+      });
+      if (criteria.building.trim()) query.set("building", criteria.building.trim());
+      const result = await requestApi(`/rooms/recommendations?${query}`, token);
+      setRecommendations(result.recommendations);
+      setMessage(result.message || "");
+    } catch (requestError) {
+      setError(requestError.message);
+    } finally {
+      setIsLoading(false);
+    }
+  }
+
+  return (
+    <div className="recommendation-layout">
+      <form className="panel recommendation-form" onSubmit={handleSubmit}>
+        <div className="panelhead">
+          <div>
+            <h2>What does your group need?</h2>
+            <p>Recommendations use room capacity, type, location preference, and approved bookings.</p>
+          </div>
+        </div>
+        <div className="recommendation-fields">
+          <label>
+            Required capacity
+            <input name="capacity" type="number" min="1" max="10000" step="1" required value={criteria.capacity} onChange={updateCriteria} placeholder="e.g. 30" />
+          </label>
+          <label>
+            Room type
+            <select name="type" required value={criteria.type} onChange={updateCriteria}>
+              {["Classroom", "Lecture Hall", "Laboratory", "Meeting Room", "Auditorium", "Other"].map((type) => <option key={type}>{type}</option>)}
+            </select>
+          </label>
+          <label>
+            Building preference <span className="optional-label">Optional</span>
+            <input name="building" maxLength="80" value={criteria.building} onChange={updateCriteria} placeholder="Any building" />
+          </label>
+          <label>
+            Date
+            <input name="date" type="date" min={today} required value={criteria.date} onChange={updateCriteria} />
+          </label>
+          <label>
+            Start time
+            <input name="startTime" type="time" required value={criteria.startTime} onChange={updateCriteria} />
+          </label>
+          <label>
+            End time
+            <input name="endTime" type="time" required value={criteria.endTime} onChange={updateCriteria} />
+          </label>
+        </div>
+        {error && <div className="error" role="alert">{error}</div>}
+        <button className="primary recommendation-submit" disabled={isLoading}>
+          <Sparkles size={16} /> {isLoading ? "Finding rooms..." : "Find recommended rooms"}
+        </button>
+      </form>
+
+      {recommendations !== null && (
+        <section className="recommendation-results" aria-live="polite">
+          <div className="recommendation-results-heading">
+            <h2>Recommended rooms</h2>
+            <span>{recommendations.length} available</span>
+          </div>
+          {recommendations.length ? (
+            <div className="recommendation-cards">
+              {recommendations.map((room, index) => (
+                <article className="panel recommendation-card" key={room._id}>
+                  <div className="recommendation-card-title">
+                    <span className="recommendation-icon"><Building2 size={19} /></span>
+                    <div>
+                      <h3>{room.name}</h3>
+                      <p>{room.building} · Floor {room.floor ?? 0}</p>
+                    </div>
+                    {index === 0 && <span className="best-fit">Best fit</span>}
+                  </div>
+                  <div className="recommendation-details">
+                    <span><strong>{room.capacity}</strong> seats</span>
+                    <span>{room.type}</span>
+                    {room.capacityFit === 0 ? <span>Exact capacity fit</span> : <span>{room.capacityFit} extra {room.capacityFit === 1 ? "seat" : "seats"}</span>}
+                    {room.preferredBuilding && <span className="preference-match">Preferred building</span>}
+                  </div>
+                </article>
+              ))}
+            </div>
+          ) : (
+            <div className="panel recommendation-empty">
+              <AlertCircle size={21} />
+              <p>{message || "No suitable room is available for this time slot. Try another date, time, or building."}</p>
+            </div>
+          )}
+        </section>
       )}
     </div>
   );
@@ -683,6 +1202,9 @@ function ResourceTable({
   onEdit,
   onDelete,
   onResolve,
+  onBookingDecision,
+  onBookingCancel,
+  userId,
 }) {
   const matchingRecords = records.filter((record) =>
     JSON.stringify(record).toLowerCase().includes(searchText.toLowerCase()),
@@ -714,6 +1236,9 @@ function ResourceTable({
                 onEdit={onEdit}
                 onDelete={onDelete}
                 onResolve={onResolve}
+                onBookingDecision={onBookingDecision}
+                onBookingCancel={onBookingCancel}
+                userId={userId}
               />
             ))}
           </tbody>
@@ -755,13 +1280,14 @@ function TableHeader({ page }) {
       "Actions",
     ],
     Attendance: ["Student", "Date", "Status"],
-    Classrooms: ["Room", "Building", "Type", "Capacity", "Status", "Actions"],
+    Classrooms: ["Room number", "Building", "Floor", "Type", "Capacity", "Status", "Actions"],
     "Room bookings": [
       "Room",
       "Date",
       "Time",
       "Purpose",
       "Booked by",
+      "Status",
       "Actions",
     ],
     Notices: ["Notice", "Category", "Published", "Actions"],
@@ -786,7 +1312,7 @@ function TableHeader({ page }) {
   );
 }
 
-function ResourceRow({ page, record, canEdit, onEdit, onDelete, onResolve }) {
+function ResourceRow({ page, record, canEdit, onEdit, onDelete, onResolve, onBookingDecision, onBookingCancel, userId }) {
   if (page === "Faculty") {
     return (
       <tr>
@@ -900,10 +1426,11 @@ function ResourceRow({ page, record, canEdit, onEdit, onDelete, onResolve }) {
           <strong>{record.name}</strong>
         </td>
         <td>{record.building}</td>
+        <td>{record.floor ?? 0}</td>
         <td>{record.type}</td>
         <td>{record.capacity}</td>
         <td>
-          <em>Available</em>
+          <em>{record.available ? "Available" : "Unavailable"}</em>
         </td>
         <td>
           {canEdit && (
@@ -934,19 +1461,23 @@ function ResourceRow({ page, record, canEdit, onEdit, onDelete, onResolve }) {
         </td>
         <td>{record.purpose}</td>
         <td>{record.bookedBy?.name}</td>
+        <td><em className={`booking-status ${record.status?.toLowerCase() || "pending"}`}>{record.status || "Pending"}</em></td>
         <td>
-          {canEdit && (
+          {canEdit && record.status === "Pending" && (
             <>
-              <button className="table-action" onClick={() => onEdit(record)}>
-                Edit
+              <button className="table-action" onClick={() => onBookingDecision(record, "Approved")}>
+                Approve
               </button>
               <button
                 className="table-action danger"
-                onClick={() => onDelete(record)}
+                onClick={() => onBookingDecision(record, "Rejected")}
               >
-                Delete
+                Reject
               </button>
             </>
+          )}
+          {String(record.bookedBy?._id) === String(userId) && ["Pending", "Approved"].includes(record.status) && (
+            <button className="table-action danger" onClick={() => onBookingCancel(record)}>Cancel</button>
           )}
         </td>
       </tr>
@@ -1169,7 +1700,9 @@ function canCreateResource(page, userRole) {
     return userRole === "admin";
   }
 
-  if (page === "Attendance" || page === "Notices" || page === "Room bookings") {
+  if (page === "Room bookings") return ["admin", "faculty", "student"].includes(userRole);
+
+  if (page === "Attendance" || page === "Notices") {
     return userRole === "admin" || userRole === "faculty";
   }
 
@@ -1186,10 +1719,12 @@ function getFormFields(page) {
       ["department", "Department"],
     ],
     Classrooms: [
-      ["name", "Room name"],
+      ["name", "Room number"],
       ["building", "Building"],
+      ["floor", "Floor"],
       ["type", "Room type"],
       ["capacity", "Capacity"],
+      ["available", "Availability"],
     ],
     Faculty: [
       ["name", "Full name"],
@@ -1221,7 +1756,7 @@ function getFormFields(page) {
       ["category", "Category"],
     ],
     "Room bookings": [
-      ["room", "Room ID"],
+      ["room", "Room"],
       ["date", "Date"],
       ["startTime", "Start time"],
       ["endTime", "End time"],
@@ -1299,7 +1834,7 @@ function RecordModal({ page, token, onClose, onSubmit, initialRecord }) {
     const nextValue =
       name === "enrolledStudents"
         ? Array.from(selectedOptions, (option) => option.value)
-        : name === "maxEnrollment" || name === "capacity"
+          : ["maxEnrollment", "capacity", "floor"].includes(name)
           ? Number(value)
           : value;
     setFormValues((values) => ({ ...values, [name]: nextValue }));
@@ -1388,8 +1923,14 @@ function RecordModal({ page, token, onClose, onSubmit, initialRecord }) {
                       ? classes
                       : students
                 ).map((option) => (
-                  <option key={option._id} value={option._id}>
-                    {option.name ||
+                  <option
+                    key={option._id}
+                    value={option._id}
+                    disabled={name === "room" && !option.available}
+                  >
+                    {name === "room"
+                      ? `${option.building} · ${option.name}${option.available ? "" : " · Unavailable"}`
+                      : option.name ||
                       `${option.courseName} (${option.courseCode})`}
                     {option.studentId ? ` (${option.studentId})` : ""}
                   </option>
@@ -1427,7 +1968,12 @@ function RecordModal({ page, token, onClose, onSubmit, initialRecord }) {
                 <option value="absent">Absent</option>
                 <option value="late">Late</option>
               </select>
-            ) : ["body", "description"].includes(name) ? (
+            ) : name === "available" ? (
+              <select name={name} value={formValues[name] ?? true} onChange={(event) => setFormValues((values) => ({ ...values, available: event.target.value === "true" }))}>
+                <option value="true">Available</option>
+                <option value="false">Unavailable</option>
+              </select>
+            ) : ["body", "description", "purpose"].includes(name) ? (
               <textarea name={name} required rows="3" onChange={updateField} />
             ) : (
               <input
@@ -1436,10 +1982,15 @@ function RecordModal({ page, token, onClose, onSubmit, initialRecord }) {
                 type={getInputType(name)}
                 value={formValues[name] ?? (name === "maxEnrollment" ? 60 : "")}
                 minLength={name === "password" ? 8 : undefined}
+                maxLength={name === "purpose" ? 500 : undefined}
                 min={
-                  name === "capacity" || name === "maxEnrollment"
-                    ? 1
-                    : undefined
+                  name === "date"
+                    ? new Date().toISOString().slice(0, 10)
+                    : name === "capacity" || name === "maxEnrollment"
+                      ? 1
+                      : name === "floor"
+                        ? 0
+                        : undefined
                 }
                 onChange={updateField}
               />
@@ -1465,11 +2016,10 @@ function RecordModal({ page, token, onClose, onSubmit, initialRecord }) {
 }
 
 function getInputType(fieldName) {
-  if (fieldName === "date") {
-    return "date";
-  }
+  if (fieldName === "date") return "date";
+  if (["startTime", "endTime"].includes(fieldName)) return "time";
 
-  if (fieldName === "capacity") {
+  if (["capacity", "floor"].includes(fieldName)) {
     return "number";
   }
 

@@ -24,6 +24,297 @@
   background: #fff0f1;
 }
 
+.booking-status {
+  display: inline-block;
+  border-radius: 999px;
+  padding: 4px 9px;
+  font-size: 11px;
+  font-weight: 700;
+  font-style: normal;
+  background: #f1efff;
+  color: #6048bd;
+}
+.booking-status.approved {
+  background: #e9f8f1;
+  color: #17734f;
+}
+.booking-status.rejected,
+.booking-status.cancelled {
+  background: #fff0f1;
+  color: #a43e4d;
+}
+
+.recommendation-layout {
+  display: grid;
+  gap: 22px;
+}
+.recommendation-form {
+  padding: 22px;
+}
+.recommendation-fields {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 16px;
+  margin: 18px 0;
+}
+.recommendation-fields label {
+  display: grid;
+  gap: 7px;
+  color: #55596a;
+  font-size: 12px;
+  font-weight: 600;
+}
+.recommendation-fields input,
+.recommendation-fields select {
+  width: 100%;
+  min-height: 40px;
+  padding: 0 11px;
+  border: 1px solid #e5e6ed;
+  border-radius: 7px;
+  background: #fff;
+  color: #303242;
+}
+.optional-label {
+  color: #999baa;
+  font-weight: 400;
+}
+.recommendation-submit {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+.recommendation-results-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 12px;
+}
+.recommendation-results-heading h2 {
+  margin: 0;
+  font: 700 17px Manrope, sans-serif;
+}
+.recommendation-results-heading > span {
+  color: #777b8d;
+  font-size: 12px;
+}
+.recommendation-cards {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 13px;
+}
+.recommendation-card {
+  padding: 17px;
+}
+.recommendation-card-title {
+  display: flex;
+  align-items: center;
+  gap: 11px;
+}
+.recommendation-icon {
+  width: 39px;
+  height: 39px;
+  display: grid;
+  place-items: center;
+  border-radius: 10px;
+  background: #f3efff;
+  color: #7153d9;
+}
+.recommendation-card-title h3 {
+  margin: 0;
+  font: 700 15px Manrope, sans-serif;
+}
+.recommendation-card-title p {
+  margin: 4px 0 0;
+  color: #858899;
+  font-size: 12px;
+}
+.best-fit {
+  margin-left: auto;
+  padding: 5px 9px;
+  border-radius: 999px;
+  background: #e9f8f1;
+  color: #17734f;
+  font-size: 10px;
+  font-weight: 700;
+}
+.recommendation-details {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 15px;
+}
+.recommendation-details span {
+  padding: 6px 9px;
+  border-radius: 7px;
+  background: #f7f7fa;
+  color: #626678;
+  font-size: 11px;
+}
+.recommendation-details .preference-match {
+  background: #f3efff;
+  color: #6048bd;
+}
+.recommendation-empty {
+  display: flex;
+  align-items: center;
+  gap: 11px;
+  padding: 18px;
+  color: #777b8d;
+}
+.recommendation-empty p {
+  margin: 0;
+}
+.analytics-page {
+  display: grid;
+  gap: 18px;
+}
+.analytics-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 10px;
+  color: #777b8d;
+  font-size: 12px;
+}
+.analytics-toolbar select {
+  border: 1px solid #e5e6ed;
+  border-radius: 7px;
+  background: #fff;
+  color: #343644;
+  padding: 8px 10px;
+}
+.analytics-toolbar small {
+  color: #9294a2;
+}
+.analytics-section h2 {
+  margin: 0 0 11px;
+  font: 700 15px Manrope, sans-serif;
+}
+.analytics-metrics {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 13px;
+}
+.analytics-metrics .card {
+  min-width: 0;
+}
+.analytics-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1.5fr) minmax(260px, 1fr);
+  gap: 16px;
+}
+.analytics-chart-panel,
+.analytics-usage-panel {
+  min-width: 0;
+}
+.booking-chart-wrap {
+  margin-top: 20px;
+}
+.booking-chart {
+  display: block;
+  width: 100%;
+  height: auto;
+  overflow: visible;
+  font: 10px "DM Sans", sans-serif;
+  fill: #858899;
+}
+.booking-chart rect {
+  rx: 2px;
+}
+.analytics-legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 15px;
+  margin: 12px 0 0 42px;
+  color: #777b8d;
+  font-size: 10px;
+}
+.analytics-legend span {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+.analytics-legend i {
+  width: 8px;
+  height: 8px;
+  border-radius: 2px;
+}
+.analytics-bars {
+  display: grid;
+  gap: 17px;
+  margin-top: 25px;
+}
+.analytics-bar-row {
+  display: grid;
+  grid-template-columns: 78px minmax(0, 1fr) 30px;
+  align-items: center;
+  gap: 10px;
+  color: #777b8d;
+  font-size: 11px;
+}
+.analytics-bar-row strong {
+  color: #343644;
+  text-align: right;
+}
+.analytics-bar-track {
+  height: 10px;
+  overflow: hidden;
+  border-radius: 99px;
+  background: #f0f1f5;
+}
+.analytics-bar-track i {
+  display: block;
+  height: 100%;
+  min-width: 0;
+  border-radius: inherit;
+}
+.analytics-table-wrap {
+  overflow-x: auto;
+  margin-top: 17px;
+}
+.analytics-table {
+  width: 100%;
+  border-collapse: collapse;
+  text-align: left;
+  white-space: nowrap;
+}
+.analytics-table th {
+  padding: 10px 12px;
+  border-bottom: 1px solid #eceef3;
+  color: #9294a2;
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: .4px;
+}
+.analytics-table td {
+  padding: 12px;
+  border-bottom: 1px solid #f0f1f5;
+  color: #626678;
+  font-size: 12px;
+}
+.analytics-table td strong {
+  color: #303242;
+}
+.analytics-empty,
+.analytics-message {
+  padding: 24px 8px;
+  color: #898c9a;
+  font-size: 12px;
+  text-align: center;
+}
+@media (max-width: 800px) {
+  .recommendation-fields,
+  .recommendation-cards {
+    grid-template-columns: 1fr;
+  }
+  .analytics-grid {
+    grid-template-columns: 1fr;
+  }
+  .analytics-metrics {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
 .success {
   align-items: center;
   background: #e9f8f1;
