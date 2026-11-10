@@ -238,6 +238,7 @@ async function getRoomForecast(req, res) {
       forecast: {
         available: sufficientHistory,
         method: "weekday-and-time-slot historical mean",
+        demandClassification: "High demand is at or above the forecast upper quartile; low demand is at or below the lower quartile. Identical predicted values are labeled typical.",
         minimumApprovedBookings: MIN_BOOKINGS,
         minimumActiveWeeks: MIN_ACTIVE_WEEKS,
         startDate: dateString(forecastStart),

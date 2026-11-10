@@ -18,6 +18,7 @@ import {
   Plus,
   Search,
   Sparkles,
+  Wrench,
   Users,
 } from "lucide-react";
      
@@ -28,6 +29,7 @@ const navigationItems = [
   ["Analytics", BarChart3],
   ["Students", Users],
   ["Faculty", Users],
+  ["Technicians", Wrench],
   ["Classes", ClipboardCheck],
   ["Attendance", ClipboardCheck],
   ["Classrooms", DoorOpen],
@@ -40,6 +42,7 @@ const navigationItems = [
 const resourceEndpoints = {
   Students: "/students",
   Faculty: "/faculty",
+  Technicians: "/admin/users/technicians",
   Classes: "/classes",
   Attendance: "/attendance",
   Classrooms: "/rooms",
@@ -82,6 +85,9 @@ function App() {
   const [successMessage, setSuccessMessage] = useState("");
   const [isLoading, setIsLoading] = useState(false);
   const [editingRecord, setEditingRecord] = useState(null);
+  const [inspectionRoom, setInspectionRoom] = useState(null);
+  const [technicians, setTechnicians] = useState([]);
+  const [roomOptions, setRoomOptions] = useState([]);
 
   useEffect(() => {
     if (!token) {
@@ -108,7 +114,21 @@ function App() {
       .catch((error) => setErrorMessage(error.message));
 
     loadRecords(page);
-  }, [token, page]);
+    if (page === "Complaints") {
+      requestApi("/rooms", token)
+        .then(setRoomOptions)
+        .catch((error) => setErrorMessage(error.message));
+    } else {
+      setRoomOptions([]);
+    }
+    if (page === "Complaints" && user?.role === "admin") {
+      requestApi("/admin/users/technicians", token)
+        .then(setTechnicians)
+        .catch((error) => setErrorMessage(error.message));
+    } else {
+      setTechnicians([]);
+    }
+  }, [token, page, user?.role]);
 
   async function loadRecords(selectedPage = page) {
     const endpoint = resourceEndpoints[selectedPage];
@@ -201,6 +221,7 @@ function App() {
         <TopBar
           page={page}
           user={user}
+          token={token}
           searchText={searchText}
           onSearch={setSearchText}
         />
@@ -253,12 +274,18 @@ function App() {
                   "Classes",
                   "Faculty",
                   "Students",
+                  "Technicians",
                   "Classrooms",
                   "Notices",
                   "Complaints",
                 ].includes(page)
               }
               userId={user?.id || user?._id}
+              userRole={user?.role}
+              technicians={technicians}
+              roomOptions={roomOptions}
+              canInspectRoom={["admin", "faculty", "technician"].includes(user?.role)}
+              onInspectRoom={setInspectionRoom}
               onEdit={(record) => {
                 setEditingRecord(record);
                 setIsModalOpen(true);
@@ -321,6 +348,31 @@ function App() {
                   setErrorMessage(error.message);
                 }
               }}
+              onAssignComplaint={async (record, technicianId) => {
+                try {
+                  await requestApi(`/complaints/${record._id}/assign`, token, {
+                    method: "PATCH",
+                    body: JSON.stringify({ technicianId: technicianId || null }),
+                  });
+                  await loadRecords(page);
+                  setSuccessMessage("Maintenance assignment updated.");
+                } catch (error) { setErrorMessage(error.message); }
+              }}
+              onUpdateWork={async (record, values) => {
+                try {
+                  await requestApi(`/complaints/${record._id}/work`, token, { method: "PATCH", body: JSON.stringify(values) });
+                  await loadRecords(page);
+                  setSuccessMessage(values.status === "Pending Verification" ? "Repair submitted for faculty verification." : "Work progress updated.");
+                } catch (error) { setErrorMessage(error.message); throw error; }
+              }}
+              onVerifyRepair={async (record, decision, note) => {
+                try {
+                  await requestApi(`/complaints/${record._id}/verify`, token, { method: "PATCH", body: JSON.stringify({ decision, note }) });
+                  await loadRecords(page);
+                  await requestApi("/dashboard", token).then(setDashboard);
+                  setSuccessMessage(decision === "accept" ? "Repair accepted and complaint closed." : "Repair rejected and returned to the technician.");
+                } catch (error) { setErrorMessage(error.message); throw error; }
+              }}
             />
           )}
         </section>
@@ -335,6 +387,14 @@ function App() {
           initialRecord={editingRecord}
         />
       )}
+      {inspectionRoom && (
+        <RoomInspectionModal
+          room={inspectionRoom}
+          token={token}
+          onClose={() => setInspectionRoom(null)}
+          onSaved={async () => { setInspectionRoom(null); await loadRecords("Classrooms"); }}
+        />
+      )}
     </div>
   );
 }
@@ -345,6 +405,7 @@ function Sidebar({ activePage, dashboard, user, onNavigate, onLogout }) {
     admin: [
       "Overview",
       "Analytics",
+      "Technicians",
       "Students",
       "Faculty",
       "Classes",
@@ -367,6 +428,7 @@ function Sidebar({ activePage, dashboard, user, onNavigate, onLogout }) {
       "Complaints",
     ],
     student: ["Overview", "Classes", "Attendance", "Classrooms", "Room bookings", "Room recommendations", "Notices", "Complaints"],
+    technician: ["Overview", "Classrooms", "Complaints"],
   }[role] || ["Overview"];
 
   return (
@@ -422,7 +484,7 @@ function Sidebar({ activePage, dashboard, user, onNavigate, onLogout }) {
   );
 }
 
-function TopBar({ page, user, searchText, onSearch }) {
+function TopBar({ page, user, token, searchText, onSearch }) {
   return (
     <header>
       <div className="crumb">
@@ -440,13 +502,56 @@ function TopBar({ page, user, searchText, onSearch }) {
           />
           <kbd>Ctrl K</kbd>
         </div>
-        <button className="bell" aria-label="Notifications">
-          <Bell size={18} />
-          <i />
-        </button>
+        <NotificationBell token={token} />
         <b className="userdot">{user?.name?.[0] || "A"}</b>
       </div>
     </header>
+  );
+}
+
+function NotificationBell({ token }) {
+  const [notifications, setNotifications] = useState([]);
+  const [isOpen, setIsOpen] = useState(false);
+
+  async function loadNotifications() {
+    try { setNotifications(await requestApi("/notifications", token)); } catch { /* Header remains usable if notifications are unavailable. */ }
+  }
+
+  useEffect(() => { loadNotifications(); }, [token]);
+
+  async function openNotifications() {
+    const nextOpen = !isOpen;
+    setIsOpen(nextOpen);
+    if (nextOpen) await loadNotifications();
+  }
+
+  async function markRead(notification) {
+    if (notification.readAt) return;
+    try {
+      await requestApi(`/notifications/${notification._id}/read`, token, { method: "PATCH" });
+      setNotifications((items) => items.map((item) => item._id === notification._id ? { ...item, readAt: new Date().toISOString() } : item));
+    } catch { /* The notification can still be read in the list. */ }
+  }
+
+  const unreadCount = notifications.filter((notification) => !notification.readAt).length;
+  return (
+    <div className="notification-wrap">
+      <button className="bell" aria-label={`Notifications${unreadCount ? `, ${unreadCount} unread` : ""}`} aria-expanded={isOpen} onClick={openNotifications}>
+        <Bell size={18} />{unreadCount > 0 && <i />}
+      </button>
+      {isOpen && (
+        <div className="notification-popover">
+          <div className="notification-popover-head"><strong>Notifications</strong><span>{unreadCount} unread</span></div>
+          {notifications.length ? notifications.map((notification) => (
+            <button className={`notification-item ${notification.readAt ? "read" : "unread"}`} key={notification._id} onClick={() => markRead(notification)}>
+              <strong>{notification.title}</strong>
+              <span>{notification.message}</span>
+              <small>{new Date(notification.createdAt).toLocaleString()}</small>
+            </button>
+          )) : <div className="notification-empty">No notifications yet.</div>}
+        </div>
+      )}
+    </div>
   );
 }
 
@@ -721,8 +826,15 @@ function RoomForecastPanel({ token }) {
     item.hours += period.expectedBookedHours;
     forecastDays.set(period.date, item);
   }
-  const highPeriods = data.forecast.periods.filter((period) => period.demandLevel === "High demand").slice(0, 5);
-  const lowPeriods = data.forecast.periods.filter((period) => period.demandLevel === "Low demand").slice(0, 5);
+  const highPeriods = data.forecast.periods
+    .filter((period) => period.demandLevel === "High demand")
+    .sort((a, b) => b.expectedBookedHours - a.expectedBookedHours)
+    .slice(0, 5);
+  const lowPeriods = data.forecast.periods
+    .filter((period) => period.demandLevel === "Low demand")
+    .sort((a, b) => a.expectedBookedHours - b.expectedBookedHours)
+    .slice(0, 5);
+  const expectedHours = data.forecast.periods.reduce((sum, period) => sum + period.expectedBookedHours, 0);
 
   return (
     <section className="forecast-module">
@@ -746,7 +858,7 @@ function RoomForecastPanel({ token }) {
           <div className="forecast-pattern-grid">
             <ForecastPattern title="Usage by weekday" subtitle="Average actual booked hours per weekday" rows={actualWeekdays.map((row) => [row.day, row.avgBookedHours, "#7657df"])} />
             <ForecastPattern title="Usage by time slot" subtitle="Actual approved hours in each slot" rows={actualSlots.map((row) => [`${row.label} · ${row.startTime}–${row.endTime}`, row.bookedHours, "#4f8fe8"])} />
-            <ForecastPattern title="Usage by building" subtitle="Actual approved booked hours" rows={actualBuildings.map((row) => [row.building, row.bookedHours, "#27a58a"])} emptyText="No building usage recorded." />
+            <ForecastPattern title="Usage by building" subtitle="Top six buildings by actual approved hours" rows={actualBuildings.map((row) => [row.building, row.bookedHours, "#27a58a"])} emptyText="No building usage recorded." />
             <ForecastPattern title="Usage by room type" subtitle="Actual approved booked hours" rows={actualTypes.map((row) => [row.roomType, row.bookedHours, "#f2a94b"])} emptyText="No room-type usage recorded." />
           </div>
         ) : (
@@ -761,8 +873,14 @@ function RoomForecastPanel({ token }) {
               <span className="forecast-predicted-label">PREDICTION · NEXT 7 DAYS</span>
               <h3>Expected room demand</h3>
               <p>Forecast from historical averages for the same weekday and time slot.</p>
+              <p>{data.forecast.demandClassification}</p>
             </div>
             <span>{data.forecast.startDate} to {data.forecast.endDate}</span>
+          </div>
+          <div className="forecast-summary prediction-summary">
+            <div><strong>{expectedHours.toFixed(1)}</strong><span>Predicted booked hours · next 7 days</span></div>
+            <div><strong>{data.forecast.periods.length}</strong><span>Day and time-slot estimates</span></div>
+            <div><strong>{highPeriods.length}</strong><span>High-demand periods shown</span></div>
           </div>
           <ForecastDailyChart days={[...forecastDays.values()]} />
           <div className="forecast-demand-grid">
@@ -986,6 +1104,7 @@ function ErrorNotice({ message, onDismiss }) {
 function DashboardPage({ dashboard, onNavigate }) {
   const student = dashboard.role === "student";
   const faculty = dashboard.role === "faculty";
+  const technician = dashboard.role === "technician";
   const classes = Array.isArray(dashboard.classes) ? dashboard.classes : [];
   const notices = dashboard.notices || dashboard.recentNotices || [];
   const cards = student
@@ -1041,6 +1160,12 @@ function DashboardPage({ dashboard, onNavigate }) {
             "#4f8fe8",
           ],
         ]
+      : technician
+        ? [
+            ["Assigned maintenance", dashboard.assignedMaintenance || 0, Wrench, "#7657df"],
+            ["Active issues", dashboard.activeIssues || 0, Clock3, "#f2a94b"],
+            ["Awaiting verification", dashboard.pendingVerification || 0, CheckCircle2, "#27a58a"],
+          ]
       : [
           ["Students", dashboard.students || 0, Users, "#7657df"],
           [
@@ -1080,7 +1205,9 @@ function DashboardPage({ dashboard, onNavigate }) {
                 ? "My timetable"
                 : faculty
                   ? "Assigned classes"
-                  : "Campus summary"
+                  : technician
+                    ? "Maintenance work"
+                    : "Campus summary"
             }
             subtitle="Information from your campus account"
           />
@@ -1205,21 +1332,46 @@ function ResourceTable({
   onBookingDecision,
   onBookingCancel,
   userId,
+  userRole,
+  technicians,
+  roomOptions,
+  canInspectRoom,
+  onInspectRoom,
+  onAssignComplaint,
+  onUpdateWork,
+  onVerifyRepair,
 }) {
+  const [filters, setFilters] = useState({ room: "", priority: "", status: "", assignee: "" });
   const matchingRecords = records.filter((record) =>
     JSON.stringify(record).toLowerCase().includes(searchText.toLowerCase()),
   );
+  const filteredRecords = page === "Complaints" ? matchingRecords.filter((record) =>
+    (!filters.room || String(record.room?._id || "") === filters.room) &&
+    (!filters.priority || record.priority === filters.priority) &&
+    (!filters.status || record.status === filters.status) &&
+    (!filters.assignee || (filters.assignee === "unassigned" ? !record.assignedTo : String(record.assignedTo?._id || "") === filters.assignee)),
+  ) : matchingRecords;
 
   return (
     <div className="panel tablepanel">
-      <PanelHeading title={page} subtitle={`${records.length} records`}>
-        <div className="filter">
-          <Search size={16} />
-          <input
-            placeholder={`Filter ${page.toLowerCase()}`}
-            value={searchText}
-            onChange={(event) => onSearch(event.target.value)}
-          />
+      <PanelHeading title={page === "Complaints" ? "Central Maintenance Notice Board" : page} subtitle={`${filteredRecords.length} records`}>
+        <div className="resource-filters">
+          <div className="filter"><Search size={16} /><input placeholder={`Filter ${page.toLowerCase()}`} value={searchText} onChange={(event) => onSearch(event.target.value)} /></div>
+          {page === "Complaints" && <div className="maintenance-filters">
+            <select aria-label="Filter by room" value={filters.room} onChange={(event) => setFilters((value) => ({ ...value, room: event.target.value }))}>
+              <option value="">All rooms</option>
+              {roomOptions.map((room) => <option key={room._id} value={room._id}>{room.name} · {room.building}</option>)}
+            </select>
+            <select aria-label="Filter by priority" value={filters.priority} onChange={(event) => setFilters((value) => ({ ...value, priority: event.target.value }))}>
+              <option value="">All priorities</option>{["Low", "Normal", "High", "Urgent"].map((priority) => <option key={priority}>{priority}</option>)}
+            </select>
+            <select aria-label="Filter by status" value={filters.status} onChange={(event) => setFilters((value) => ({ ...value, status: event.target.value }))}>
+              <option value="">All statuses</option>{["Open", "In progress", "Pending Verification", "Resolved", "Closed"].map((status) => <option key={status}>{status}</option>)}
+            </select>
+            {userRole === "admin" && <select aria-label="Filter by assignee" value={filters.assignee} onChange={(event) => setFilters((value) => ({ ...value, assignee: event.target.value }))}>
+              <option value="">All assignees</option><option value="unassigned">Unassigned</option>{technicians.map((technician) => <option key={technician.id} value={technician.id}>{technician.name}</option>)}
+            </select>}
+          </div>}
         </div>
       </PanelHeading>
 
@@ -1227,7 +1379,7 @@ function ResourceTable({
         <table>
           <TableHeader page={page} />
           <tbody>
-            {matchingRecords.map((record, index) => (
+            {filteredRecords.map((record, index) => (
               <ResourceRow
                 key={record._id || index}
                 page={page}
@@ -1239,6 +1391,14 @@ function ResourceTable({
                 onBookingDecision={onBookingDecision}
                 onBookingCancel={onBookingCancel}
                 userId={userId}
+                userRole={userRole}
+                technicians={technicians}
+                roomOptions={roomOptions}
+                canInspectRoom={canInspectRoom}
+                onInspectRoom={onInspectRoom}
+                onAssignComplaint={onAssignComplaint}
+                onUpdateWork={onUpdateWork}
+                onVerifyRepair={onVerifyRepair}
               />
             ))}
           </tbody>
@@ -1247,14 +1407,154 @@ function ResourceTable({
         {isLoading ? (
           <div className="empty">Loading {page.toLowerCase()}...</div>
         ) : (
-          records.length === 0 && (
+          filteredRecords.length === 0 && (
             <div className="empty">
               <AlertCircle size={20} />
-              <span>No records yet. Add a record to get started.</span>
+              <span>{records.length === 0 ? "No records yet." : "No records match these filters."}</span>
             </div>
           )
         )}
       </div>
+    </div>
+  );
+}
+
+function MaintenanceRow({ record, userRole, canEdit, technicians, onResolve, onAssign, onUpdateWork, onVerify }) {
+  const [showWorkForm, setShowWorkForm] = useState(false);
+  const [note, setNote] = useState("");
+  const [resolutionDetails, setResolutionDetails] = useState("");
+  const [evidenceText, setEvidenceText] = useState("");
+  const [verificationNote, setVerificationNote] = useState("");
+  const [actionError, setActionError] = useState("");
+  const [saving, setSaving] = useState(false);
+  const isFacility = Boolean(record.room);
+
+  async function submitWork(status) {
+    if (!note.trim()) { setActionError("Add a short work update."); return; }
+    if (status === "Pending Verification" && !resolutionDetails.trim()) { setActionError("Add resolution details before submitting for verification."); return; }
+    const evidence = evidenceText.split(/\r?\n/).map((url) => url.trim()).filter(Boolean);
+    if (status === "Pending Verification" && evidence.length === 0) { setActionError("Add at least one evidence link before requesting verification."); return; }
+    setSaving(true);
+    setActionError("");
+    try {
+      await onUpdateWork(record, {
+        status,
+        note,
+        resolutionDetails,
+        evidence,
+      });
+      setShowWorkForm(false);
+    } catch (error) { setActionError(error.message); }
+    finally { setSaving(false); }
+  }
+
+  async function verify(decision) {
+    if (decision === "reject" && !verificationNote.trim()) { setActionError("Add a reason before rejecting the repair."); return; }
+    setSaving(true);
+    setActionError("");
+    try { await onVerify(record, decision, verificationNote); }
+    catch (error) { setActionError(error.message); }
+    finally { setSaving(false); }
+  }
+
+  const history = record.history || [];
+  return (
+    <tr className="maintenance-row">
+      <td><strong>{record.title}</strong><small>{record.description}</small></td>
+      <td>{record.room ? `${record.room.name} · ${record.room.building}` : "General complaint"}<small>{record.equipment || record.category}</small></td>
+      <td><span className={`priority-chip ${String(record.priority || "Normal").toLowerCase()}`}>{record.priority || "Normal"}</span></td>
+      <td><span className={`complaint-status ${String(record.status || "Open").toLowerCase().replaceAll(" ", "-")}`}>{record.status || "Open"}</span></td>
+      <td>{record.submittedBy?.name || "—"}</td>
+      <td>
+        {canEdit && isFacility ? (
+          <select aria-label={`Assign ${record.title}`} disabled={["Closed", "Resolved"].includes(record.status)} value={record.assignedTo?._id || ""} onChange={(event) => onAssign(record, event.target.value)}>
+            <option value="">Unassigned</option>
+            {technicians.map((technician) => <option key={technician.id} value={technician.id}>{technician.name}</option>)}
+          </select>
+        ) : record.assignedTo?.name || "—"}
+      </td>
+      <td>
+        {new Date(record.createdAt).toLocaleDateString()}
+        <details className="complaint-history">
+          <summary>History ({history.length})</summary>
+          {record.verifiedAt && <p><strong>Verified by:</strong> {record.verifiedBy?.name || "Faculty"} · {new Date(record.verifiedAt).toLocaleString()}</p>}
+          {record.resolutionDetails && <p><strong>Resolution:</strong> {record.resolutionDetails}</p>}
+          {record.resolutionEvidence?.map((url, index) => <p key={`${url}-${index}`}><strong>Evidence:</strong> {url}</p>)}
+          {history.map((item) => <div className="complaint-history-item" key={item._id || `${item.action}-${item.createdAt}`}>
+            <strong>{item.action}</strong><small>{item.actor?.name || "User"} · {new Date(item.createdAt).toLocaleString()}</small>
+            {item.note && <p>{item.note}</p>}
+            {item.evidence?.map((url, index) => <small key={`${url}-${index}`}>Evidence: {url}</small>)}
+          </div>)}
+        </details>
+      </td>
+      <td className="maintenance-actions">
+        {userRole === "technician" && isFacility && ["Open", "In progress"].includes(record.status) && (
+          <>
+            {!showWorkForm ? <button className="table-action" onClick={() => setShowWorkForm(true)}>Update work</button> : (
+              <div className="work-update-form">
+                <textarea placeholder="Work update" value={note} onChange={(event) => setNote(event.target.value)} />
+                <textarea placeholder="Resolution details (required to submit for verification)" value={resolutionDetails} onChange={(event) => setResolutionDetails(event.target.value)} />
+                <textarea placeholder="Evidence links, one per line (required for verification)" value={evidenceText} onChange={(event) => setEvidenceText(event.target.value)} />
+                <button className="table-action" disabled={saving} onClick={() => submitWork("In progress")}>Save progress</button>
+                <button className="table-action" disabled={saving} onClick={() => submitWork("Pending Verification")}>Submit for verification</button>
+                <button className="table-action" onClick={() => setShowWorkForm(false)}>Cancel</button>
+              </div>
+            )}
+          </>
+        )}
+        {userRole === "faculty" && isFacility && record.status === "Pending Verification" && (
+          <div className="verification-actions">
+            <textarea placeholder="Verification note / rejection reason" value={verificationNote} onChange={(event) => setVerificationNote(event.target.value)} />
+            <button className="table-action" disabled={saving} onClick={() => verify("accept")}>Accept repair</button>
+            <button className="table-action danger" disabled={saving} onClick={() => verify("reject")}>Reject</button>
+          </div>
+        )}
+        {canEdit && !isFacility && record.status !== "Resolved" && <button className="table-action" onClick={() => onResolve(record)}>Mark resolved</button>}
+        {actionError && <small className="inline-action-error">{actionError}</small>}
+      </td>
+    </tr>
+  );
+}
+
+function RoomInspectionModal({ room, token, onClose, onSaved }) {
+  const types = ["Fan", "AC", "Projector", "Light"];
+  const [equipment, setEquipment] = useState(() => types.map((type) => {
+    const current = room.equipment?.find((item) => item.type === type);
+    return { type, status: current?.status || "Working", note: current?.note || "" };
+  }));
+  const [error, setError] = useState("");
+  const [saving, setSaving] = useState(false);
+
+  function updateItem(type, field, value) {
+    setEquipment((items) => items.map((item) => item.type === type ? { ...item, [field]: value } : item));
+  }
+
+  async function submit(event) {
+    event.preventDefault();
+    setSaving(true);
+    setError("");
+    try {
+      await requestApi(`/rooms/${room._id}/inspection`, token, { method: "PATCH", body: JSON.stringify({ equipment }) });
+      await onSaved();
+    } catch (requestError) { setError(requestError.message); }
+    finally { setSaving(false); }
+  }
+
+  return (
+    <div className="overlay" onMouseDown={(event) => event.target === event.currentTarget && onClose()}>
+      <form className="modal inspection-modal" onSubmit={submit}>
+        <div className="modalhead"><h2>Inspect {room.name} · {room.building}</h2><button type="button" onClick={onClose} aria-label="Close inspection">×</button></div>
+        <p className="inspection-help">Record the current condition for every critical facility. Fault reports remain on maintenance hold until faculty accepts the repair.</p>
+        {error && <div className="error">{error}</div>}
+        {equipment.map((item) => <div className="inspection-item" key={item.type}>
+          <strong>{item.type}</strong>
+          <select aria-label={`${item.type} condition`} value={item.status} onChange={(event) => updateItem(item.type, "status", event.target.value)}>
+            {["Working", "Not Working", "Needs Maintenance"].map((status) => <option key={status}>{status}</option>)}
+          </select>
+          <input maxLength="500" placeholder="Inspection note (optional)" value={item.note} onChange={(event) => updateItem(item.type, "note", event.target.value)} />
+        </div>)}
+        <div className="modal-actions"><button type="button" className="secondary" onClick={onClose}>Cancel</button><button className="primary" disabled={saving}>{saving ? "Saving…" : "Save inspection"}</button></div>
+      </form>
     </div>
   );
 }
@@ -1274,15 +1574,15 @@ function TableHeader({ page }) {
       "Course",
       "Code / section",
       "Faculty",
-      "Room",
+      "Room / inspection",
       "Schedule",
       "Enrollment",
       "Actions",
     ],
     Attendance: ["Student", "Date", "Status"],
-    Classrooms: ["Room number", "Building", "Floor", "Type", "Capacity", "Status", "Actions"],
+    Classrooms: ["Room number", "Building", "Floor", "Type", "Capacity", "Availability", "Inspection status", "Equipment", "Actions"],
     "Room bookings": [
-      "Room",
+      "Room / inspection",
       "Date",
       "Time",
       "Purpose",
@@ -1292,13 +1592,16 @@ function TableHeader({ page }) {
     ],
     Notices: ["Notice", "Category", "Published", "Actions"],
     Complaints: [
-      "Complaint",
-      "Category",
-      "Submitted by",
+      "Issue",
+      "Room / equipment",
+      "Priority",
       "Status",
-      "Date",
+      "Reported by",
+      "Assignee",
+      "Date / history",
       "Actions",
     ],
+    Technicians: ["Technician", "Role", "Created"],
   };
 
   return (
@@ -1312,7 +1615,14 @@ function TableHeader({ page }) {
   );
 }
 
-function ResourceRow({ page, record, canEdit, onEdit, onDelete, onResolve, onBookingDecision, onBookingCancel, userId }) {
+function ResourceRow({ page, record, canEdit, onEdit, onDelete, onResolve, onBookingDecision, onBookingCancel, userId, userRole, technicians, canInspectRoom, onInspectRoom, onAssignComplaint, onUpdateWork, onVerifyRepair }) {
+  if (page === "Technicians") {
+    return <tr><td><strong>{record.name}</strong></td><td>Technician</td><td>{new Date(record.createdAt).toLocaleDateString()}</td></tr>;
+  }
+
+  if (page === "Complaints") {
+    return <MaintenanceRow record={record} userRole={userRole} canEdit={canEdit} technicians={technicians} onResolve={onResolve} onAssign={onAssignComplaint} onUpdateWork={onUpdateWork} onVerify={onVerifyRepair} />;
+  }
   if (page === "Faculty") {
     return (
       <tr>
@@ -1350,7 +1660,7 @@ function ResourceRow({ page, record, canEdit, onEdit, onDelete, onResolve, onBoo
           {record.courseCode} / {record.section}
         </td>
         <td>{record.faculty?.name || "—"}</td>
-        <td>{record.room?.name || "—"}</td>
+        <td>{record.room?.name || "—"}<small>{record.room?.operationalStatus || ""}</small></td>
         <td>
           {record.day}, {record.startTime}–{record.endTime}
         </td>
@@ -1432,6 +1742,8 @@ function ResourceRow({ page, record, canEdit, onEdit, onDelete, onResolve, onBoo
         <td>
           <em>{record.available ? "Available" : "Unavailable"}</em>
         </td>
+        <td><span className={`inspection-status ${record.operationalStatus === "Operational" ? "operational" : "maintenance"}`}>{record.operationalStatus || "Not inspected"}</span></td>
+        <td>{(record.equipment || []).map((item) => <small key={item.type}>{item.type}: {item.status}</small>)}</td>
         <td>
           {canEdit && (
             <>
@@ -1446,6 +1758,7 @@ function ResourceRow({ page, record, canEdit, onEdit, onDelete, onResolve, onBoo
               </button>
             </>
           )}
+          {canInspectRoom && <button className="table-action" onClick={() => onInspectRoom(record)}>Inspect</button>}
         </td>
       </tr>
     );
@@ -1454,7 +1767,7 @@ function ResourceRow({ page, record, canEdit, onEdit, onDelete, onResolve, onBoo
   if (page === "Room bookings") {
     return (
       <tr>
-        <td>{record.room?.name}</td>
+        <td>{record.room?.name}<small>{record.room?.operationalStatus || "Not inspected"}</small></td>
         <td>{record.date}</td>
         <td>
           {record.startTime}–{record.endTime}
@@ -1685,6 +1998,7 @@ function getRecordLabel(page) {
   const labels = {
     Students: "student",
     Faculty: "faculty member",
+    Technicians: "technician",
     Classes: "class",
     Classrooms: "room",
     "Room bookings": "booking",
@@ -1696,7 +2010,7 @@ function getRecordLabel(page) {
 }
 
 function canCreateResource(page, userRole) {
-  if (["Students", "Faculty", "Classes", "Classrooms"].includes(page)) {
+  if (["Students", "Faculty", "Technicians", "Classes", "Classrooms"].includes(page)) {
     return userRole === "admin";
   }
 
@@ -1717,6 +2031,11 @@ function getFormFields(page) {
       ["password", "Temporary password"],
       ["studentId", "Student ID"],
       ["department", "Department"],
+    ],
+    Technicians: [
+      ["name", "Technician name"],
+      ["email", "Email"],
+      ["password", "Temporary password (12+ characters)"],
     ],
     Classrooms: [
       ["name", "Room number"],
@@ -1754,6 +2073,9 @@ function getFormFields(page) {
       ["title", "Subject"],
       ["description", "Describe the issue"],
       ["category", "Category"],
+      ["room", "Room (optional; choose for a facility issue)"],
+      ["equipment", "Faulty equipment"],
+      ["priority", "Priority"],
     ],
     "Room bookings": [
       ["room", "Room"],
@@ -1822,6 +2144,7 @@ function RecordModal({ page, token, onClose, onSubmit, initialRecord }) {
         }
         if (page === "Room bookings")
           setRooms(await requestApi("/rooms", token));
+        if (page === "Complaints") setRooms(await requestApi("/rooms", token));
       } catch (error) {
         setFormError(error.message);
       }
@@ -1910,11 +2233,11 @@ function RecordModal({ page, token, onClose, onSubmit, initialRecord }) {
             ) : ["faculty", "room", "student", "campusClass"].includes(name) ? (
               <select
                 name={name}
-                required
+                required={name !== "room"}
                 value={formValues[name] || ""}
                 onChange={updateField}
               >
-                <option value="">Select {label.toLowerCase()}</option>
+                <option value="">{name === "room" ? "General complaint (no room)" : `Select ${label.toLowerCase()}`}</option>
                 {(name === "faculty"
                   ? faculty
                   : name === "room"
@@ -1929,7 +2252,7 @@ function RecordModal({ page, token, onClose, onSubmit, initialRecord }) {
                     disabled={name === "room" && !option.available}
                   >
                     {name === "room"
-                      ? `${option.building} · ${option.name}${option.available ? "" : " · Unavailable"}`
+                      ? `${option.building} · ${option.name} · ${option.operationalStatus || "Not inspected"}${option.available ? "" : " · Unavailable"}`
                       : option.name ||
                       `${option.courseName} (${option.courseCode})`}
                     {option.studentId ? ` (${option.studentId})` : ""}
@@ -1949,6 +2272,14 @@ function RecordModal({ page, token, onClose, onSubmit, initialRecord }) {
                     {student.studentId ? `(${student.studentId})` : ""}
                   </option>
                 ))}
+              </select>
+            ) : name === "equipment" ? (
+              <select name={name} required={Boolean(formValues.room)} value={formValues[name] || ""} onChange={updateField} disabled={!formValues.room}>
+                <option value="">Select equipment</option>{["Fan", "AC", "Projector", "Light"].map((item) => <option key={item}>{item}</option>)}
+              </select>
+            ) : name === "priority" ? (
+              <select name={name} value={formValues[name] || "Normal"} onChange={updateField}>
+                {["Low", "Normal", "High", "Urgent"].map((priority) => <option key={priority}>{priority}</option>)}
               </select>
             ) : name === "audience" ? (
               <select
@@ -1981,7 +2312,7 @@ function RecordModal({ page, token, onClose, onSubmit, initialRecord }) {
                 required={name !== "password" || !initialRecord}
                 type={getInputType(name)}
                 value={formValues[name] ?? (name === "maxEnrollment" ? 60 : "")}
-                minLength={name === "password" ? 8 : undefined}
+                minLength={name === "password" ? (page === "Technicians" ? 12 : 8) : undefined}
                 maxLength={name === "purpose" ? 500 : undefined}
                 min={
                   name === "date"
@@ -2017,6 +2348,7 @@ function RecordModal({ page, token, onClose, onSubmit, initialRecord }) {
 
 function getInputType(fieldName) {
   if (fieldName === "date") return "date";
+  if (fieldName === "email") return "email";
   if (["startTime", "endTime"].includes(fieldName)) return "time";
 
   if (["capacity", "floor"].includes(fieldName)) {

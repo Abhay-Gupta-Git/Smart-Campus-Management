@@ -17,6 +17,7 @@ const apiRoutes = {
   bookings: "bookingRoutes",
   notices: "noticeRoutes",
   complaints: "complaintRoutes",
+  notifications: "notificationRoutes",
   dashboard: "dashboardRoutes",
   "admin/users": "adminUserRoutes",
 };

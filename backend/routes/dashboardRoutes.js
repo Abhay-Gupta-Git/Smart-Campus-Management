@@ -25,7 +25,7 @@ async function getStudentDashboard(req, res) {
   const [campusClass, attendance, notices] = await Promise.all([
     CampusClass.find({ enrolledStudents: req.user.id })
       .populate("faculty", "name")
-      .populate("room", "name building")
+      .populate("room", "name building equipment maintenanceHold")
       .sort({ day: 1, startTime: 1 }),
     Attendance.find({ student: req.user.id })
       .populate("campusClass", "courseName courseCode")
@@ -58,11 +58,11 @@ async function getFacultyDashboard(req, res) {
   const today = new Date().toISOString().slice(0, 10);
   const [campusClasses, bookings, notices] = await Promise.all([
     CampusClass.find({ faculty: req.user.id })
-      .populate("room", "name building")
+      .populate("room", "name building equipment maintenanceHold")
       .populate("enrolledStudents", "name studentId")
       .sort({ day: 1, startTime: 1 }),
     Booking.find({ bookedBy: req.user.id, date: today })
-      .populate("room", "name building")
+      .populate("room", "name building equipment maintenanceHold")
       .sort("startTime"),
     Notice.find(getNoticeFilter("faculty")).sort({ createdAt: -1 }).limit(5),
   ]);
@@ -98,7 +98,7 @@ async function getAdminDashboard(req, res) {
     Room.countDocuments(),
     Booking.countDocuments(),
     Notice.countDocuments(),
-    Complaint.countDocuments({ status: { $ne: "Resolved" } }),
+    Complaint.countDocuments({ status: { $nin: ["Resolved", "Closed"] } }),
     CampusClass.countDocuments(),
     Notice.find().populate("author", "name").sort({ createdAt: -1 }).limit(5),
   ]);
@@ -117,6 +117,16 @@ async function getAdminDashboard(req, res) {
   });
 }
 
+async function getTechnicianDashboard(req, res) {
+  const filter = { assignedTo: req.user.id, room: { $ne: null } };
+  const [assignedMaintenance, pendingVerification, activeIssues] = await Promise.all([
+    Complaint.countDocuments(filter),
+    Complaint.countDocuments({ ...filter, status: "Pending Verification" }),
+    Complaint.countDocuments({ ...filter, status: { $in: ["Open", "In progress"] } }),
+  ]);
+  return res.json({ role: "technician", profile: req.user, assignedMaintenance, pendingVerification, activeIssues });
+}
+
 router.get("/", protect, async (req, res) => {
   try {
     if (req.user.role === "student") {
@@ -125,6 +135,10 @@ router.get("/", protect, async (req, res) => {
 
     if (req.user.role === "faculty") {
       return await getFacultyDashboard(req, res);
+    }
+
+    if (req.user.role === "technician") {
+      return await getTechnicianDashboard(req, res);
     }
 
     return await getAdminDashboard(req, res);

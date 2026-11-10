@@ -125,4 +125,38 @@ async function provisionConfiguredAdmin(req, res) {
   }
 }
 
-module.exports = { provisionConfiguredAdmin };
+async function provisionTechnician(req, res) {
+  const body = req.body || {};
+  if (Object.keys(body).some((key) => !["name", "email", "password"].includes(key))) {
+    return res.status(400).json({ message: "Only name, email, and password are accepted." });
+  }
+  if (typeof body.name !== "string" || !body.name.trim() || body.name.trim().length > 120 || !isValidEmail(body.email)) {
+    return res.status(400).json({ message: "A valid name and email are required." });
+  }
+  if (typeof body.password !== "string" || body.password.length < minimumPasswordLength || Buffer.byteLength(body.password, "utf8") > maximumBcryptPasswordBytes) {
+    return res.status(400).json({ message: "Password must be at least 12 characters and no more than 72 UTF-8 bytes." });
+  }
+  try {
+    const email = body.email.trim().toLowerCase();
+    const exists = await User.exists({ email });
+    if (exists) return res.status(409).json({ message: "An account with this email already exists." });
+    const password = await bcrypt.hash(body.password, 12);
+    const technician = await User.create({ name: body.name.trim(), email, password, role: "technician" });
+    return res.status(201).json({ technician: { id: technician._id, name: technician.name, role: technician.role } });
+  } catch (error) {
+    if (error.code === 11000) return res.status(409).json({ message: "An account with this email already exists." });
+    console.error("Technician provisioning failed:", error.message);
+    return res.status(500).json({ message: "Unable to create technician account." });
+  }
+}
+
+async function listTechnicians(req, res) {
+  try {
+    const technicians = await User.find({ role: "technician" }).select("name role createdAt").sort("name").lean();
+    return res.json(technicians.map(({ _id, name, role, createdAt }) => ({ id: _id, name, role, createdAt })));
+  } catch (error) {
+    return res.status(500).json({ message: "Unable to load technician accounts." });
+  }
+}
+
+module.exports = { provisionConfiguredAdmin, provisionTechnician, listTechnicians };

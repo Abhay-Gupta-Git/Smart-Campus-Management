@@ -44,6 +44,40 @@ async function getRoom(req, res) {
   }
 }
 
+async function inspectRoom(req, res) {
+  if (invalidId(req.params.id)) return res.status(400).json({ message: "Invalid room ID" });
+  const allowedTypes = ["Fan", "AC", "Projector", "Light"];
+  const allowedStatuses = ["Working", "Not Working", "Needs Maintenance"];
+  const equipment = req.body?.equipment;
+  if (!Array.isArray(equipment) || equipment.length !== allowedTypes.length ||
+    equipment.some((item) => !item || typeof item !== "object") ||
+    new Set(equipment.map((item) => item.type)).size !== allowedTypes.length ||
+    equipment.some((item) => !allowedTypes.includes(item.type) || !allowedStatuses.includes(item.status) ||
+      (item.note !== undefined && (typeof item.note !== "string" || item.note.length > 500)))) {
+    return res.status(400).json({ message: "Submit one condition for each fan, AC, projector, and light." });
+  }
+  try {
+    const room = await Room.findById(req.params.id).select("+inspectionHistory");
+    if (!room) return res.status(404).json({ message: "Room not found" });
+    const inspectedAt = new Date();
+    const inspectedEquipment = equipment.map((item) => ({
+      type: item.type,
+      status: item.status,
+      note: item.note?.trim() || "",
+      inspectedBy: req.user.id,
+      inspectedAt,
+    }));
+    room.inspectionHistory.push({ equipment: inspectedEquipment, recordedAt: inspectedAt });
+    room.equipment = inspectedEquipment;
+    await room.save();
+    return res.json(room);
+  } catch (error) {
+    if (error.name === "ValidationError") return res.status(400).json({ message: error.message });
+    console.error("Room inspection failed:", error.message);
+    return res.status(500).json({ message: "Failed to save room inspection" });
+  }
+}
+
 async function createRoom(req, res) {
   try {
     const payload = roomPayload(req.body);
@@ -88,4 +122,4 @@ async function deleteRoom(req, res) {
   }
 }
 
-module.exports = { listRooms, getRoom, createRoom, updateRoom, deleteRoom };
+module.exports = { listRooms, getRoom, inspectRoom, createRoom, updateRoom, deleteRoom };

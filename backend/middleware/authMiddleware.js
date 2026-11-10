@@ -18,6 +18,10 @@ function normalizeRole(role) {
     return "student";
   }
 
+  if (["technician", "tech team", "tech_team"].includes(normalizedRole)) {
+    return "technician";
+  }
+
   return null;
 }
 

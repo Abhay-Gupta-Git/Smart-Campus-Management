@@ -87,7 +87,7 @@ async function findScheduleConflict(details, excludedId) {
 function classPopulation(query) {
   return query
     .populate("faculty", "name email department")
-    .populate("room", "name building capacity type")
+    .populate("room", "name building capacity type equipment maintenanceHold")
     .populate("enrolledStudents", "name email studentId department");
 }
 
