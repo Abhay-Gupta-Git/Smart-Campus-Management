@@ -2283,9 +2283,12 @@ function RecordModal({ page, token, onClose, onSubmit, initialRecord }) {
     setIsSaving(true);
     setFormError("");
     try {
+      const payload = Object.fromEntries(fields
+        .filter(([name]) => Object.hasOwn(formValues, name))
+        .map(([name]) => [name, formValues[name]]));
       await onSubmit({
-        ...formValues,
-        capacity: Number(formValues.capacity) || 30,
+        ...payload,
+        ...(page === "Classrooms" ? { capacity: Number(formValues.capacity) || 30 } : {}),
       });
     } catch (error) {
       setFormError(error.message);
