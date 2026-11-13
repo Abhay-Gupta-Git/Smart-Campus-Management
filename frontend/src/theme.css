@@ -1,18 +1,34 @@
 :root {
-  font-family: "DM Sans", sans-serif;
+  font-family: var(--font-body);
   color: #172033;
   background: #f6f8fb;
   font-synthesis: none;
   text-rendering: optimizeLegibility;
-  --brand: #2563eb;
-  --brand-dark: #1d4ed8;
-  --brand-soft: #eff6ff;
+  --font-body: "DM Sans", sans-serif;
+  --font-heading: "Manrope", sans-serif;
+  --brand: #315fbd;
+  --brand-dark: #244d9d;
+  --brand-soft: #edf3ff;
+  --tone-brand: #315fbd;
+  --tone-success: #16805f;
+  --tone-warning: #a96f1c;
+  --tone-danger: #b34355;
+  --tone-info: #3f78bf;
+  --tone-neutral: #64748b;
   --ink: #172033;
   --muted: #64748b;
-  --line: #e6eaf0;
+  --line: #e2e8f0;
   --surface: #fff;
   --canvas: #f6f8fb;
-  --shadow-card: 0 2px 8px rgb(15 23 42 / 3%), 0 12px 30px rgb(15 23 42 / 2%);
+  --radius-sm: 7px;
+  --radius-md: 10px;
+  --radius-lg: 13px;
+  --space-1: 4px;
+  --space-2: 8px;
+  --space-3: 12px;
+  --space-4: 16px;
+  --space-6: 24px;
+  --shadow-card: 0 1px 2px rgb(15 23 42 / 4%), 0 8px 22px rgb(15 23 42 / 4%);
 }
 
 * {
@@ -23,7 +39,7 @@ body {
   min-width: 320px;
   background: var(--canvas);
   color: var(--ink);
-  font-family: "DM Sans", sans-serif;
+  font-family: var(--font-body);
   font-size: 14px;
   -webkit-font-smoothing: antialiased;
 }
@@ -51,6 +67,11 @@ textarea:focus-visible {
   outline: 3px solid rgb(37 99 235 / 20%);
   outline-offset: 2px;
 }
+summary:focus-visible {
+  outline: 3px solid rgb(49 95 189 / 25%);
+  outline-offset: 2px;
+}
+button:disabled { cursor: not-allowed; opacity: .58; }
 
 .sidebar {
   width: 258px;
@@ -102,6 +123,7 @@ textarea:focus-visible {
   border-radius: 8px;
   color: #64748b;
   font-size: 13px;
+  transition: background-color 150ms ease, color 150ms ease;
 }
 
 .navitem svg {
@@ -274,7 +296,7 @@ header {
 .auth-card h1 {
   margin: 8px 0 5px;
   color: var(--ink);
-  font-family: Manrope, sans-serif;
+  font-family: var(--font-heading);
   font-size: 26px;
   font-weight: 750;
   letter-spacing: -0.85px;
@@ -297,16 +319,15 @@ header {
   padding: 10px 15px;
   border-radius: 8px;
   background: var(--brand);
-  box-shadow: 0 3px 8px rgb(37 99 235 / 17%);
+  box-shadow: 0 2px 5px rgb(49 95 189 / 16%);
   color: #fff;
   font-size: 12px;
   font-weight: 650;
 }
 
 .primary:hover {
-  transform: translateY(-1px);
   background: var(--brand-dark);
-  box-shadow: 0 5px 12px rgb(37 99 235 / 22%);
+  box-shadow: 0 3px 8px rgb(49 95 189 / 18%);
 }
 
 .primary:disabled {
@@ -317,6 +338,9 @@ header {
 
 .cards {
   gap: 17px;
+}
+.dashboard-cards.dashboard-admin {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
 }
 
 .card,
@@ -330,14 +354,11 @@ header {
 .card {
   height: 143px;
   padding: 18px 19px;
-  transition:
-    transform 160ms ease,
-    box-shadow 160ms ease;
+  transition: border-color 150ms ease, box-shadow 150ms ease;
 }
 
 .card:hover {
-  transform: translateY(-2px);
-  box-shadow: 0 5px 14px rgb(15 23 42 / 6%);
+  border-color: #d5deec;
 }
 
 .card-icon {
@@ -375,7 +396,7 @@ header {
 .panelhead h2 {
   margin-bottom: 5px;
   color: var(--ink);
-  font-family: Manrope, sans-serif;
+  font-family: var(--font-heading);
   font-size: 14px;
   font-weight: 700;
   letter-spacing: -0.2px;
@@ -668,6 +689,54 @@ tbody em {
   padding-top: 5px;
 }
 
+.status-badge {
+  min-height: 22px;
+  padding: 3px 9px;
+  border: 1px solid transparent;
+  border-radius: 999px;
+  background: #f1f5f9;
+  color: var(--tone-neutral);
+  font-size: 11px;
+  font-style: normal;
+  font-weight: 650;
+  line-height: 1.25;
+  white-space: nowrap;
+}
+.status-approved,
+.status-resolved,
+.status-closed,
+.status-operational,
+.status-present,
+.status-available {
+  background: #e8f5ef;
+  color: var(--tone-success);
+}
+.status-pending,
+.status-pending-verification,
+.status-maintenance-required,
+.status-late {
+  background: #fff4e3;
+  color: var(--tone-warning);
+}
+.status-rejected,
+.status-cancelled,
+.status-unavailable,
+.status-absent,
+.status-not-working {
+  background: #fff0f1;
+  color: var(--tone-danger);
+}
+.status-in-progress,
+.status-needs-maintenance {
+  background: var(--brand-soft);
+  color: var(--brand-dark);
+}
+.status-not-inspected,
+.status-unknown {
+  background: #f1f5f9;
+  color: var(--tone-neutral);
+}
+
 .secondary {
   min-height: 39px;
   border-color: #dce3ec;
@@ -875,24 +944,7 @@ tbody em {
   }
 }
 
-/* Product refinement: accessible table controls, deliberate states and mobile navigation. */
-:root {
-  --brand: #315fbd;
-  --brand-dark: #244d9d;
-  --brand-soft: #edf3ff;
-  --line: #e2e8f0;
-  --shadow-card: 0 1px 2px rgb(15 23 42 / 4%), 0 8px 22px rgb(15 23 42 / 4%);
-}
-
-button, input, select, textarea { font: inherit; }
-button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-visible, summary:focus-visible {
-  outline: 3px solid rgb(49 95 189 / 25%);
-  outline-offset: 2px;
-}
-button:disabled { cursor: not-allowed; opacity: .58; }
-.panel, .card, .modal { box-shadow: var(--shadow-card); }
-.navitem { transition: background-color .15s ease, color .15s ease; }
-.navitem.active { background: var(--brand-soft); color: var(--brand-dark); }
+/* Accessible controls and responsive refinements for shared page components. */
 .tablewrap { overflow-x: auto; overscroll-behavior-inline: contain; }
 .tablewrap table { min-width: 760px; }
 .sort-heading { border: 0; padding: 4px 0; background: transparent; color: inherit; font: inherit; font-weight: 700; text-align: left; cursor: pointer; white-space: nowrap; }

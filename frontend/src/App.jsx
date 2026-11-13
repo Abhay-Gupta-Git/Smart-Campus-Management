@@ -24,6 +24,7 @@ import {
 } from "lucide-react";
      
 const API_URL = import.meta.env.VITE_API_URL || "http://localhost:5000/api";
+const INSTITUTION_NAME = import.meta.env.VITE_INSTITUTION_NAME?.trim() || "CampusOS";
 
 const navigationItems = [
   ["Overview", LayoutDashboard],
@@ -302,6 +303,7 @@ function App() {
           searchText={searchText}
           onSearch={setSearchText}
           onMenu={() => setIsSidebarOpen((open) => !open)}
+          isSidebarOpen={isSidebarOpen}
           onNavigateNotification={navigateToNotification}
         />
 
@@ -503,7 +505,7 @@ function Sidebar({ activePage, dashboard, user, onNavigate, onLogout, isOpen, on
   return (
     <>
     {isOpen && <button className="sidebar-scrim" aria-label="Close navigation" onClick={onClose} />}
-    <aside className={`sidebar ${isOpen ? "sidebar-open" : ""}`}>
+    <aside id="campus-sidebar" className={`sidebar ${isOpen ? "sidebar-open" : ""}`} aria-label="Primary navigation">
       <div className="brand">
         <b className="brandmark">
           <Building2 size={20} />
@@ -516,27 +518,30 @@ function Sidebar({ activePage, dashboard, user, onNavigate, onLogout, isOpen, on
 
       <div className="section-label">WORKSPACE</div>
 
-      {navigationItems
-        .filter(([label]) => allowedPages.includes(label))
-        .map(([label, Icon]) => (
-          <button
-            key={label}
-            className={`navitem ${activePage === label ? "active" : ""}`}
-            onClick={() => { onNavigate(label); onClose(); }}
-          >
-            <Icon size={18} />
-            {label}
-            {label === "Complaints" && dashboard.openComplaints > 0 && (
-              <i>{dashboard.openComplaints}</i>
-            )}
-          </button>
-        ))}
+      <nav className="primary-nav" aria-label="Workspace">
+        {navigationItems
+          .filter(([label]) => allowedPages.includes(label))
+          .map(([label, Icon]) => (
+            <button
+              key={label}
+              className={`navitem ${activePage === label ? "active" : ""}`}
+              aria-current={activePage === label ? "page" : undefined}
+              onClick={() => { onNavigate(label); onClose(); }}
+            >
+              <Icon size={18} />
+              {label}
+              {label === "Complaints" && dashboard.openComplaints > 0 && (
+                <i>{dashboard.openComplaints}</i>
+              )}
+            </button>
+          ))}
+      </nav>
 
       <div className="side-foot">
         <div className="org">
           <Building2 size={18} />
           <span>
-            <strong>Northstar University</strong>
+            <strong>{INSTITUTION_NAME}</strong>
             <small>{role[0].toUpperCase() + role.slice(1)} workspace</small>
           </span>
           <span aria-hidden="true">⌄</span>
@@ -556,7 +561,7 @@ function Sidebar({ activePage, dashboard, user, onNavigate, onLogout, isOpen, on
   );
 }
 
-function TopBar({ page, user, token, searchText, onSearch, onMenu, onNavigateNotification }) {
+function TopBar({ page, user, token, searchText, onSearch, onMenu, isSidebarOpen, onNavigateNotification }) {
   const searchInput = useRef(null);
 
   useEffect(() => {
@@ -573,7 +578,7 @@ function TopBar({ page, user, token, searchText, onSearch, onMenu, onNavigateNot
   return (
     <header>
       <div className="crumb">
-        <button className="menu-toggle" aria-label="Toggle navigation" onClick={onMenu}><Menu size={18} /></button>
+        <button className="menu-toggle" aria-label="Toggle navigation" aria-expanded={isSidebarOpen} aria-controls="campus-sidebar" onClick={onMenu}><Menu size={18} /></button>
         Workspace <span>/</span> <strong>{page}</strong>
       </div>
 
@@ -582,6 +587,7 @@ function TopBar({ page, user, token, searchText, onSearch, onMenu, onNavigateNot
           <Search size={16} />
           <input
             ref={searchInput}
+          aria-label={`Search ${page.toLowerCase()}`}
             placeholder={`Search ${page.toLowerCase()}...`}
             value={searchText}
             onChange={(event) => onSearch(event.target.value)}
@@ -782,30 +788,30 @@ function AnalyticsDashboardPage({ token }) {
   if (!analytics) return null;
 
   const campusMetrics = [
-    ["Students", analytics.totals.students, Users, "#7657df"],
-    ["Faculty", analytics.totals.faculty, ClipboardCheck, "#27a58a"],
-    ["Rooms", analytics.totals.rooms, DoorOpen, "#f2a94b"],
-    ["Classes", analytics.totals.classes, CalendarDays, "#4f8fe8"],
+    ["Students", analytics.totals.students, Users, "var(--tone-brand)"],
+    ["Faculty", analytics.totals.faculty, ClipboardCheck, "var(--tone-success)"],
+    ["Rooms", analytics.totals.rooms, DoorOpen, "var(--tone-warning)"],
+    ["Classes", analytics.totals.classes, CalendarDays, "var(--tone-info)"],
   ];
   const bookingMetrics = [
-    ["Total bookings", analytics.bookings.total, CalendarDays, "#4f8fe8"],
-    ["Pending", analytics.bookings.Pending, Clock3, "#f2a94b"],
-    ["Approved", analytics.bookings.Approved, CheckCircle2, "#27a58a"],
-    ["Rejected", analytics.bookings.Rejected, AlertCircle, "#d35c6a"],
-    ["Cancelled", analytics.bookings.Cancelled, CalendarDays, "#858899"],
+    ["Total bookings", analytics.bookings.total, CalendarDays, "var(--tone-info)"],
+    ["Pending", analytics.bookings.Pending, Clock3, "var(--tone-warning)"],
+    ["Approved", analytics.bookings.Approved, CheckCircle2, "var(--tone-success)"],
+    ["Rejected", analytics.bookings.Rejected, AlertCircle, "var(--tone-danger)"],
+    ["Cancelled", analytics.bookings.Cancelled, CalendarDays, "var(--tone-neutral)"],
   ];
   const complaintMetrics = [
-    ["Total complaints", analytics.complaints.total, MessageSquareWarning, "#4f8fe8"],
-    ["Open", analytics.complaints.Open, AlertCircle, "#d35c6a"],
-    ["In progress", analytics.complaints["In progress"], Clock3, "#f2a94b"],
-    ["Resolved", analytics.complaints.Resolved, CheckCircle2, "#27a58a"],
+    ["Total complaints", analytics.complaints.total, MessageSquareWarning, "var(--tone-info)"],
+    ["Open", analytics.complaints.Open, AlertCircle, "var(--tone-danger)"],
+    ["In progress", analytics.complaints["In progress"], Clock3, "var(--tone-warning)"],
+    ["Resolved", analytics.complaints.Resolved, CheckCircle2, "var(--tone-success)"],
   ];
   const attendanceMetrics = [
-    ["Attendance records", analytics.attendance.total, ClipboardCheck, "#4f8fe8"],
-    ["Present", analytics.attendance.present, CheckCircle2, "#27a58a"],
-    ["Late", analytics.attendance.late, Clock3, "#f2a94b"],
-    ["Absent", analytics.attendance.absent, AlertCircle, "#d35c6a"],
-    ["Attendance rate", `${analytics.attendance.attendanceRate}%`, BarChart3, "#7657df"],
+    ["Attendance records", analytics.attendance.total, ClipboardCheck, "var(--tone-info)"],
+    ["Present", analytics.attendance.present, CheckCircle2, "var(--tone-success)"],
+    ["Late", analytics.attendance.late, Clock3, "var(--tone-warning)"],
+    ["Absent", analytics.attendance.absent, AlertCircle, "var(--tone-danger)"],
+    ["Attendance rate", `${analytics.attendance.attendanceRate}%`, BarChart3, "var(--tone-brand)"],
   ];
 
   return (
@@ -836,9 +842,9 @@ function AnalyticsDashboardPage({ token }) {
           <PanelHeading title={`Complaints · ${rangeLabel(range)}`} subtitle="Current status of complaints created in this period" />
           {analytics.complaints.total ? (
             <AnalyticsBars rows={[
-              ["Open", analytics.complaints.Open, "#d35c6a"],
-              ["In progress", analytics.complaints["In progress"], "#f2a94b"],
-              ["Resolved", analytics.complaints.Resolved, "#27a58a"],
+              ["Open", analytics.complaints.Open, "var(--tone-danger)"],
+              ["In progress", analytics.complaints["In progress"], "var(--tone-warning)"],
+              ["Resolved", analytics.complaints.Resolved, "var(--tone-success)"],
             ]} />
           ) : <div className="analytics-empty">No complaint records for this period.</div>}
         </section>
@@ -867,9 +873,9 @@ function AnalyticsDashboardPage({ token }) {
         <PanelHeading title="Attendance breakdown" subtitle="Present and late count as attended" />
         {analytics.attendance.total ? (
           <AnalyticsBars rows={[
-            ["Present", analytics.attendance.present, "#27a58a"],
-            ["Late", analytics.attendance.late, "#f2a94b"],
-            ["Absent", analytics.attendance.absent, "#d35c6a"],
+            ["Present", analytics.attendance.present, "var(--tone-success)"],
+            ["Late", analytics.attendance.late, "var(--tone-warning)"],
+            ["Absent", analytics.attendance.absent, "var(--tone-danger)"],
           ]} />
         ) : <div className="analytics-empty">No attendance records for this period.</div>}
       </section>
@@ -911,7 +917,7 @@ function BookingTrendChart({ data, granularity }) {
   const maxValue = Math.max(1, ...chartData.map((item) => item.total));
   const slotWidth = plotWidth / chartData.length;
   const barWidth = Math.min(25, slotWidth * 0.62);
-  const colors = { Approved: "#27a58a", Pending: "#f2a94b", Rejected: "#d35c6a", Cancelled: "#a0a2af" };
+  const colors = { Approved: "var(--tone-success)", Pending: "var(--tone-warning)", Rejected: "var(--tone-danger)", Cancelled: "var(--tone-neutral)" };
   const statuses = Object.keys(colors);
   const labelStep = Math.max(1, Math.ceil(chartData.length / 8));
 
@@ -1021,10 +1027,10 @@ function RoomForecastPanel({ token }) {
         </div>
         {data.history.approvedBookings ? (
           <div className="forecast-pattern-grid">
-            <ForecastPattern title="Usage by weekday" subtitle="Average actual booked hours per weekday" rows={actualWeekdays.map((row) => [row.day, row.avgBookedHours, "#7657df"])} />
-            <ForecastPattern title="Usage by time slot" subtitle="Actual approved hours in each slot" rows={actualSlots.map((row) => [`${row.label} · ${row.startTime}–${row.endTime}`, row.bookedHours, "#4f8fe8"])} />
-            <ForecastPattern title="Usage by building" subtitle="Top six buildings by actual approved hours" rows={actualBuildings.map((row) => [row.building, row.bookedHours, "#27a58a"])} emptyText="No building usage recorded." />
-            <ForecastPattern title="Usage by room type" subtitle="Actual approved booked hours" rows={actualTypes.map((row) => [row.roomType, row.bookedHours, "#f2a94b"])} emptyText="No room-type usage recorded." />
+            <ForecastPattern title="Usage by weekday" subtitle="Average actual booked hours per weekday" rows={actualWeekdays.map((row) => [row.day, row.avgBookedHours, "var(--tone-brand)"])} />
+            <ForecastPattern title="Usage by time slot" subtitle="Actual approved hours in each slot" rows={actualSlots.map((row) => [`${row.label} · ${row.startTime}–${row.endTime}`, row.bookedHours, "var(--tone-info)"])} />
+            <ForecastPattern title="Usage by building" subtitle="Top six buildings by actual approved hours" rows={actualBuildings.map((row) => [row.building, row.bookedHours, "var(--tone-success)"])} emptyText="No building usage recorded." />
+            <ForecastPattern title="Usage by room type" subtitle="Actual approved booked hours" rows={actualTypes.map((row) => [row.roomType, row.bookedHours, "var(--tone-warning)"])} emptyText="No room-type usage recorded." />
           </div>
         ) : (
           <div className="analytics-empty">{data.noDataMessage || "No approved booking data is available."}</div>
@@ -1116,7 +1122,7 @@ function ForecastDailyChart({ days }) {
           const barHeight = (day.hours / maxHours) * plotHeight;
           const x = left + index * slot + (slot - barWidth) / 2;
           const y = top + plotHeight - barHeight;
-          return <g key={day.label}><rect x={x} y={y} width={barWidth} height={barHeight} fill="#8a72e4" rx="3"><title>{`${day.label}: ${day.hours.toFixed(1)} predicted booked hours`}</title></rect><text x={x + barWidth / 2} y={height - 12} textAnchor="middle">{day.label}</text></g>;
+          return <g key={day.label}><rect x={x} y={y} width={barWidth} height={barHeight} fill="var(--tone-brand)" rx="3"><title>{`${day.label}: ${day.hours.toFixed(1)} predicted booked hours`}</title></rect><text x={x + barWidth / 2} y={height - 12} textAnchor="middle">{day.label}</text></g>;
         })}
       </svg>
     </div>
@@ -1267,6 +1273,7 @@ function ErrorNotice({ message, onDismiss }) {
 }
 
 function DashboardPage({ dashboard, isLoading, onNavigate }) {
+  if (!isLoading && !dashboard.role) return <section className="panel empty-state" role="status">Dashboard data is unavailable. Reload the page to try again.</section>;
   const student = dashboard.role === "student";
   const faculty = dashboard.role === "faculty";
   const technician = dashboard.role === "technician";
@@ -1278,21 +1285,21 @@ function DashboardPage({ dashboard, isLoading, onNavigate }) {
           "Enrolled classes",
           dashboard.classes?.length || 0,
           ClipboardCheck,
-          "#7657df",
+          "var(--tone-brand)",
         ],
         [
           "Attendance rate",
           `${dashboard.attendanceSummary?.percentage || 0}%`,
           CheckCircle2,
-          "#27a58a",
+          "var(--tone-success)",
         ],
         [
           "Attendance records",
           dashboard.attendance?.length || 0,
           CalendarDays,
-          "#f2a94b",
+          "var(--tone-warning)",
         ],
-        ["Notices", dashboard.notices?.length || 0, Megaphone, "#4f8fe8"],
+        ["Notices", dashboard.notices?.length || 0, Megaphone, "var(--tone-info)"],
       ]
     : faculty
       ? [
@@ -1300,7 +1307,7 @@ function DashboardPage({ dashboard, isLoading, onNavigate }) {
             "Assigned classes",
             dashboard.classes?.length || 0,
             ClipboardCheck,
-            "#7657df",
+            "var(--tone-brand)",
           ],
           [
             "Enrolled students",
@@ -1310,48 +1317,40 @@ function DashboardPage({ dashboard, isLoading, onNavigate }) {
               0,
             ),
             Users,
-            "#27a58a",
+            "var(--tone-success)",
           ],
           [
             "Attendance marked today",
             dashboard.attendanceToday || 0,
             CheckCircle2,
-            "#f2a94b",
+            "var(--tone-warning)",
           ],
           [
             "Today's bookings",
             dashboard.bookings?.length || 0,
             CalendarDays,
-            "#4f8fe8",
+            "var(--tone-info)",
           ],
         ]
       : technician
         ? [
-            ["Assigned maintenance", dashboard.assignedMaintenance || 0, Wrench, "#7657df"],
-            ["Active issues", dashboard.activeIssues || 0, Clock3, "#f2a94b"],
-            ["Awaiting verification", dashboard.pendingVerification || 0, CheckCircle2, "#27a58a"],
+            ["Assigned maintenance", dashboard.assignedMaintenance || 0, Wrench, "var(--tone-brand)"],
+            ["Active issues", dashboard.activeIssues || 0, Clock3, "var(--tone-warning)"],
+            ["Awaiting verification", dashboard.pendingVerification || 0, CheckCircle2, "var(--tone-success)"],
           ]
       : [
-          ["Students", dashboard.students || 0, Users, "#7657df"],
-          [
-            "Faculty members",
-            dashboard.faculty || 0,
-            ClipboardCheck,
-            "#27a58a",
-          ],
-          ["Classes", dashboard.classes || 0, CalendarDays, "#f2a94b"],
-          [
-            "Open complaints",
-            dashboard.openComplaints || 0,
-            MessageSquareWarning,
-            "#4f8fe8",
-          ],
+          ["Students", dashboard.students || 0, Users, "var(--tone-brand)"],
+          ["Faculty", dashboard.faculty || 0, ClipboardCheck, "var(--tone-success)"],
+          ["Rooms", dashboard.rooms || 0, DoorOpen, "var(--tone-info)"],
+          ["Classes", dashboard.classes || 0, CalendarDays, "var(--tone-warning)"],
+          ["Bookings", dashboard.bookings || 0, CalendarDays, "var(--tone-brand)"],
+          ["Open complaints", dashboard.openComplaints || 0, MessageSquareWarning, "var(--tone-danger)"],
         ];
 
   return (
     <>
-      <div className="cards">
-        {isLoading ? Array.from({ length: 4 }, (_, index) => <div className="card card-skeleton" key={index}><i /><i /><i /></div>) : cards.map(([label, value, Icon, color]) => (
+      <div className={`cards dashboard-cards dashboard-${dashboard.role || "loading"}`}>
+        {isLoading ? Array.from({ length: dashboard.role === "admin" ? 6 : dashboard.role === "technician" ? 3 : 4 }, (_, index) => <div className="card card-skeleton" key={index}><i /><i /><i /></div>) : cards.map(([label, value, Icon, color]) => (
           <MetricCard
             key={label}
             label={label}
@@ -1461,7 +1460,7 @@ function DashboardPage({ dashboard, isLoading, onNavigate }) {
 function MetricCard({ label, value, Icon, color }) {
   return (
     <div className="card">
-      <div className="card-icon" style={{ color, background: `${color}16` }}>
+      <div className="card-icon" style={{ color, background: `color-mix(in srgb, ${color} 11%, white)` }}>
         <Icon size={19} />
       </div>
       <strong>
@@ -1470,6 +1469,11 @@ function MetricCard({ label, value, Icon, color }) {
       <small>{label}</small>
     </div>
   );
+}
+
+function StatusBadge({ status }) {
+  const normalized = String(status || "Unknown").toLowerCase().replaceAll(" ", "-");
+  return <span className={`status-badge status-${normalized}`}>{status || "Unknown"}</span>;
 }
 
 function PanelHeading({ title, subtitle, children }) {
@@ -1582,7 +1586,7 @@ function ResourceTable({
         </div>
       </PanelHeading>
 
-      <div className="tablewrap">
+      <div className="tablewrap" role="region" aria-label={`${page} table; scroll horizontally to see more columns`} tabIndex={0}>
         <table>
           <TableHeader page={page} sort={sort} onSort={toggleSort} />
           <tbody>
@@ -1733,7 +1737,7 @@ function MaintenanceRow({ record, userRole, canEdit, technicians, onResolve, onA
       <td><strong>{record.title}</strong><small>{record.description}</small></td>
       <td>{record.room ? `${record.room.name} · ${record.room.building}` : "General complaint"}<small>{record.equipment || record.category}</small></td>
       <td><span className={`priority-chip ${String(record.priority || "Normal").toLowerCase()}`}>{record.priority || "Normal"}</span></td>
-      <td><span className={`complaint-status ${String(record.status || "Open").toLowerCase().replaceAll(" ", "-")}`}>{record.status || "Open"}</span></td>
+      <td><StatusBadge status={record.status || "Open"} /></td>
       <td>{record.submittedBy?.name || "—"}</td>
       <td>
         {canEdit && isFacility ? (
@@ -1838,7 +1842,7 @@ function TableHeader({ page, sort, onSort }) {
       "Student ID",
       "Department",
       "Email",
-      "Status",
+      "Role",
       "Actions",
     ],
     Faculty: ["Faculty", "Department", "Email", "Actions"],
@@ -1978,7 +1982,7 @@ function ResourceRow({ page, record, canEdit, onEdit, onDelete, onResolve, onBoo
         <td>{record.department || "—"}</td>
         <td>{record.email}</td>
         <td>
-          <em>Active</em>
+          <span className="entity-chip">Student</span>
         </td>
         <td>
           {canEdit && (
@@ -2005,7 +2009,7 @@ function ResourceRow({ page, record, canEdit, onEdit, onDelete, onResolve, onBoo
         <td>{record.student?.name}</td>
         <td>{record.date}</td>
         <td>
-          <em>{record.status}</em>
+          <StatusBadge status={record.status} />
         </td>
       </tr>
     );
@@ -2022,9 +2026,9 @@ function ResourceRow({ page, record, canEdit, onEdit, onDelete, onResolve, onBoo
         <td>{record.type}</td>
         <td>{record.capacity}</td>
         <td>
-          <em>{record.available ? "Available" : "Unavailable"}</em>
+          <StatusBadge status={record.available ? "Available" : "Unavailable"} />
         </td>
-        <td><span className={`inspection-status ${record.operationalStatus === "Operational" ? "operational" : "maintenance"}`}>{record.operationalStatus || "Not inspected"}</span></td>
+        <td><StatusBadge status={record.operationalStatus || "Not inspected"} /></td>
         <td>{(record.equipment || []).map((item) => <small key={item.type}>{item.type}: {item.status}</small>)}</td>
         <td>
           {canEdit && (
@@ -2056,7 +2060,7 @@ function ResourceRow({ page, record, canEdit, onEdit, onDelete, onResolve, onBoo
         </td>
         <td>{record.purpose}</td>
         <td>{record.bookedBy?.name}</td>
-        <td><em className={`booking-status ${record.status?.toLowerCase() || "pending"}`}>{record.status || "Pending"}</em></td>
+        <td><StatusBadge status={record.status || "Pending"} /></td>
         <td>
           {canEdit && record.status === "Pending" && (
             <>

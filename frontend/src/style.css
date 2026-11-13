@@ -24,25 +24,6 @@
   background: #fff0f1;
 }
 
-.booking-status {
-  display: inline-block;
-  border-radius: 999px;
-  padding: 4px 9px;
-  font-size: 11px;
-  font-weight: 700;
-  font-style: normal;
-  background: #f1efff;
-  color: #6048bd;
-}
-.booking-status.approved {
-  background: #e9f8f1;
-  color: #17734f;
-}
-.booking-status.rejected,
-.booking-status.cancelled {
-  background: #fff0f1;
-  color: #a43e4d;
-}
 
 .recommendation-layout {
   display: grid;
@@ -498,31 +479,14 @@
   padding: 6px 8px;
   font-size: 10px;
 }
-.inspection-status,
 .priority-chip,
-.complaint-status {
+.status-badge {
   display: inline-block;
   border-radius: 999px;
   padding: 5px 8px;
   font-size: 9px;
   font-weight: 700;
   white-space: nowrap;
-}
-.inspection-status.operational,
-.complaint-status.closed,
-.complaint-status.resolved {
-  background: #e9f8f1;
-  color: #17734f;
-}
-.inspection-status.maintenance,
-.complaint-status.open,
-.complaint-status.pending-verification {
-  background: #fff2e1;
-  color: #a96f1c;
-}
-.complaint-status.in-progress {
-  background: #f1efff;
-  color: #6048bd;
 }
 .priority-chip.low,
 .priority-chip.normal {
