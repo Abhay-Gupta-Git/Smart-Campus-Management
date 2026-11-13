@@ -1,18 +1,28 @@
+const mongoose = require("mongoose");
 const CampusClass = require("../models/CampusClass");
 const User = require("../models/User");
 const { hashPassword, isAcceptablePassword, MIN_PASSWORD_LENGTH } = require("../utils/password");
 const { isValidEmail, hasOnlyFields } = require("../utils/validation");
-const { readPagination, executeListQuery } = require("../utils/pagination");
+const { readPagination, readSearch, readSort, escapeRegex, executeListQuery } = require("../utils/pagination");
 const respondError = require("../utils/respondError");
+const { runTransaction, lockUserReference } = require("../utils/transactions");
+const recordActivity = require("../utils/activityLog");
 
 async function listFaculty(req, res) {
   try {
     const filter = { role: "faculty" };
     const pagination = readPagination(req, res);
     if (pagination === false) return;
+    const search = readSearch(req, res);
+    if (search === false) return;
+    const sort = readSort(req, res, ["name", "email", "department", "createdAt"], "name");
+    if (sort === false) return;
+    if (search) filter.$or = ["name", "email", "department"].map((field) => ({
+      [field]: { $regex: escapeRegex(search), $options: "i" },
+    }));
     const faculty = await executeListQuery({ query: User.find(filter)
       .select("name email role department phone createdAt")
-      .sort("name").lean(), Model: User, filter, pagination, res });
+      .sort(sort).lean(), Model: User, filter, pagination, res });
 
     return res.json(faculty);
   } catch (error) {
@@ -43,6 +53,8 @@ async function createFaculty(req, res) {
     });
     const safeFaculty = faculty.toObject();
     delete safeFaculty.password;
+
+    await recordActivity({ actor: req.user.id, action: "Faculty account created", entityType: "account", entityId: faculty._id, summary: "Created a faculty account." });
 
     return res.status(201).json(safeFaculty);
   } catch (error) {
@@ -91,6 +103,8 @@ async function updateFaculty(req, res) {
       return res.status(404).json({ message: "Faculty member not found" });
     }
 
+    await recordActivity({ actor: req.user.id, action: "Faculty account updated", entityType: "account", entityId: faculty._id, summary: "Updated a faculty account profile." });
+
     return res.json(faculty);
   } catch (error) {
     return respondError(res, error, "Faculty update", "Unable to update faculty account.");
@@ -99,22 +113,21 @@ async function updateFaculty(req, res) {
 
 async function deleteFaculty(req, res) {
   try {
-    const assignedClass = await CampusClass.exists({ faculty: req.params.id });
-
-    if (assignedClass) {
-      return res.status(409).json({
-        message: "Reassign this faculty member's classes before removing them",
-      });
-    }
-
-    const faculty = await User.findOneAndDelete({
-      _id: req.params.id,
-      role: "faculty",
+    if (!mongoose.isValidObjectId(req.params.id)) return res.status(400).json({ message: "Invalid faculty ID." });
+    const result = await runTransaction(async (session) => {
+      if (!await lockUserReference(User, req.params.id, "faculty", session)) {
+        return { status: 404, message: "Faculty member not found" };
+      }
+      const assignedClass = await CampusClass.exists({ faculty: req.params.id }).session(session);
+      if (assignedClass) {
+        return { status: 409, message: "Reassign this faculty member's classes before removing them" };
+      }
+      await User.deleteOne({ _id: req.params.id, role: "faculty" }, { session });
+      return { status: 200 };
     });
+    if (result.status !== 200) return res.status(result.status).json({ message: result.message });
 
-    if (!faculty) {
-      return res.status(404).json({ message: "Faculty member not found" });
-    }
+    await recordActivity({ actor: req.user.id, action: "Faculty account deleted", entityType: "account", entityId: req.params.id, summary: "Removed a faculty account." });
 
     return res.json({ message: "Faculty member removed" });
   } catch (error) {

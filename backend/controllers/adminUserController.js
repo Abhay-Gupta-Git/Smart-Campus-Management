@@ -1,7 +1,8 @@
 const User = require("../models/User");
-const { readPagination, executeListQuery } = require("../utils/pagination");
+const { readPagination, readSearch, readSort, escapeRegex, executeListQuery } = require("../utils/pagination");
 const { hashPassword, isAcceptablePassword, MIN_PASSWORD_LENGTH } = require("../utils/password");
 const { isValidEmail } = require("../utils/validation");
+const recordActivity = require("../utils/activityLog");
 
 const minimumPasswordLength = MIN_PASSWORD_LENGTH;
 
@@ -76,6 +77,8 @@ async function provisionConfiguredAdmin(req, res) {
       );
       if (!promotion.modifiedCount) return res.status(409).json({ message: "The configured account changed while it was being promoted. Retry the request." });
 
+      await recordActivity({ actor: req.user.id, action: "Account role changed", entityType: "account", entityId: existingUser._id, summary: "Promoted a configured account to administrator." });
+
       return res.status(200).json({
         message: "The configured account was promoted to administrator.",
       });
@@ -98,12 +101,14 @@ async function provisionConfiguredAdmin(req, res) {
 
     const hashedPassword = await hashPassword(body.password);
 
-    await User.create({
+    const createdAdmin = await User.create({
       name: body.name.trim(),
       email: configuredEmail,
       password: hashedPassword,
       role: "admin",
     });
+
+    await recordActivity({ actor: req.user.id, action: "Administrator account created", entityType: "account", entityId: createdAdmin._id, summary: "Created the configured administrator account." });
 
     return res.status(201).json({
       message: "The configured administrator account was created.",
@@ -138,6 +143,7 @@ async function provisionTechnician(req, res) {
     if (exists) return res.status(409).json({ message: "An account with this email already exists." });
     const password = await hashPassword(body.password);
     const technician = await User.create({ name: body.name.trim(), email, password, role: "technician" });
+    await recordActivity({ actor: req.user.id, action: "Technician account created", entityType: "account", entityId: technician._id, summary: "Created a technician account." });
     return res.status(201).json({ technician: { id: technician._id, name: technician.name, role: technician.role } });
   } catch (error) {
     if (error.code === 11000) return res.status(409).json({ message: "An account with this email already exists." });
@@ -151,7 +157,12 @@ async function listTechnicians(req, res) {
     const filter = { role: "technician" };
     const pagination = readPagination(req, res);
     if (pagination === false) return;
-    const technicians = await executeListQuery({ query: User.find(filter).select("name role createdAt").sort("name").lean(), Model: User, filter, pagination, res });
+    const search = readSearch(req, res);
+    if (search === false) return;
+    const sort = readSort(req, res, ["name", "createdAt"], "name");
+    if (sort === false) return;
+    if (search) filter.name = { $regex: escapeRegex(search), $options: "i" };
+    const technicians = await executeListQuery({ query: User.find(filter).select("name role createdAt").sort(sort).lean(), Model: User, filter, pagination, res });
     return res.json(technicians.map(({ _id, name, role, createdAt }) => ({ id: _id, name, role, createdAt })));
   } catch (error) {
     return res.status(500).json({ message: "Unable to load technician accounts." });

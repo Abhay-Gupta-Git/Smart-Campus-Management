@@ -42,6 +42,7 @@ const userSchema = new mongoose.Schema(
       maxlength: 30,
     },
     tokenVersion: { type: Number, default: 0, select: false, min: 0 },
+    referenceVersion: { type: Number, default: 0, select: false, min: 0 },
   },
   { timestamps: true },
 );

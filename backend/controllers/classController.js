@@ -4,8 +4,10 @@ const Room = require("../models/Room");
 const User = require("../models/User");
 const recordActivity = require("../utils/activityLog");
 const { hasOnlyFields } = require("../utils/validation");
-const { readPagination, executeListQuery } = require("../utils/pagination");
+const { readPagination, readSearch, readSort, escapeRegex, executeListQuery } = require("../utils/pagination");
 const respondError = require("../utils/respondError");
+const { runTransaction, lockRoomReference, lockStudentReferences, lockUserReference } = require("../utils/transactions");
+const Attendance = require("../models/Attendance");
 
 const classFields = ["courseName", "courseCode", "section", "faculty", "room", "day", "startTime", "endTime", "maxEnrollment", "enrolledStudents"];
 
@@ -38,9 +40,9 @@ function hasValidClassDetails(details) {
   );
 }
 
-async function validateAssignments(details) {
-  const faculty = await User.findOne({ _id: details.faculty, role: "faculty" }).select("_id").lean();
-  const room = await Room.exists({ _id: details.room });
+async function validateAssignments(details, session) {
+  const faculty = await User.findOne({ _id: details.faculty, role: "faculty" }).select("_id").session(session).lean();
+  const room = await Room.exists({ _id: details.room }).session(session);
   const enrolledStudents = [...new Set(details.enrolledStudents || [])];
 
   if (!faculty) {
@@ -60,7 +62,7 @@ async function validateAssignments(details) {
   const validStudentCount = await User.countDocuments({
     _id: { $in: enrolledStudents },
     role: "student",
-  });
+  }).session(session);
 
   if (validStudentCount !== enrolledStudents.length) {
     return { error: "All enrolled users must be student accounts" };
@@ -76,7 +78,7 @@ async function validateAssignments(details) {
   return { enrolledStudents };
 }
 
-async function findScheduleConflict(details, excludedId) {
+async function findScheduleConflict(details, excludedId, session) {
   const filter = {
     day: details.day,
     startTime: { $lt: details.endTime },
@@ -88,7 +90,7 @@ async function findScheduleConflict(details, excludedId) {
     filter._id = { $ne: excludedId };
   }
 
-  return CampusClass.findOne(filter);
+  return CampusClass.findOne(filter).session(session);
 }
 
 function classPopulation(query, includePrivateFields = false) {
@@ -101,6 +103,10 @@ function classPopulation(query, includePrivateFields = false) {
 async function listClasses(req, res) {
   try {
     const filter = {};
+    if (req.query.recordId !== undefined) {
+      if (!mongoose.isValidObjectId(req.query.recordId)) return res.status(400).json({ message: "Record filter is invalid." });
+      filter._id = req.query.recordId;
+    }
 
     if (req.user.role === "faculty") {
       filter.faculty = req.user.id;
@@ -110,9 +116,27 @@ async function listClasses(req, res) {
       filter.enrolledStudents = req.user.id;
     }
 
+    if (req.query.day !== undefined) {
+      if (!validDays.includes(req.query.day)) return res.status(400).json({ message: "Class day filter is invalid." });
+      filter.day = req.query.day;
+    }
+    const search = readSearch(req, res);
+    if (search === false) return;
+    if (search) {
+      const regex = { $regex: escapeRegex(search), $options: "i" };
+      const searchParts = ["courseName", "courseCode", "section"].map((field) => ({ [field]: regex }));
+      const lookups = [Room.find({ $or: [{ name: regex }, { building: regex }] }).distinct("_id")];
+      if (req.user.role === "admin") lookups.push(User.find({ role: "faculty", name: regex }).distinct("_id"));
+      const [roomIds, facultyIds = []] = await Promise.all(lookups);
+      if (facultyIds.length) searchParts.push({ faculty: { $in: facultyIds } });
+      if (roomIds.length) searchParts.push({ room: { $in: roomIds } });
+      filter.$and = [...(filter.$and || []), { $or: searchParts }];
+    }
     const pagination = readPagination(req, res);
     if (pagination === false) return;
-    const classes = await executeListQuery({ query: classPopulation(CampusClass.find(filter).sort({ day: 1, startTime: 1 }), req.user.role === "admin"), Model: CampusClass, filter, pagination, res });
+    const sort = readSort(req, res, ["courseName", "courseCode", "section", "day", "startTime", "endTime", "createdAt"], "day");
+    if (sort === false) return;
+    const classes = await executeListQuery({ query: classPopulation(CampusClass.find(filter).sort(sort), req.user.role === "admin"), Model: CampusClass, filter, pagination, res });
 
     return res.json(classes);
   } catch (error) {
@@ -130,32 +154,42 @@ async function createClass(req, res) {
       return res.status(400).json({ message: "Provide valid class details" });
     }
 
-    const assignments = await validateAssignments(body);
+    const result = await runTransaction(async (session) => {
+      const enrolledStudents = [...new Set(body.enrolledStudents || [])];
+      if (enrolledStudents.some((studentId) => !mongoose.isValidObjectId(studentId))) {
+        return { status: 400, message: "One or more student selections are invalid" };
+      }
+      if (!await lockUserReference(User, body.faculty, "faculty", session)) {
+        return { status: 400, message: "Select an existing faculty account" };
+      }
+      if (!await lockStudentReferences(User, enrolledStudents, session)) {
+        return { status: 400, message: "All enrolled users must be student accounts" };
+      }
+      if (!await lockRoomReference(Room, body.room, session)) return { status: 400, message: "Select an existing room" };
 
-    if (assignments.error) {
-      return res.status(400).json({ message: assignments.error });
-    }
+      const assignments = await validateAssignments(body, session);
+      if (assignments.error) return { status: 400, message: assignments.error };
+      if (await findScheduleConflict(body, null, session)) {
+        return { status: 409, message: "The faculty member or room already has a class at that time" };
+      }
 
-    const conflict = await findScheduleConflict(body);
-
-    if (conflict) {
-      return res.status(409).json({
-        message: "The faculty member or room already has a class at that time",
-      });
-    }
-
-    const campusClass = await CampusClass.create({
-      courseName: body.courseName.trim(),
-      courseCode: body.courseCode.trim().toUpperCase(),
-      section: body.section.trim(),
-      faculty: body.faculty,
-      room: body.room,
-      day: body.day,
-      startTime: body.startTime,
-      endTime: body.endTime,
-      maxEnrollment: body.maxEnrollment,
-      enrolledStudents: assignments.enrolledStudents,
+      const [campusClass] = await CampusClass.create([{
+        courseName: body.courseName.trim(),
+        courseCode: body.courseCode.trim().toUpperCase(),
+        section: body.section.trim(),
+        faculty: body.faculty,
+        room: body.room,
+        day: body.day,
+        startTime: body.startTime,
+        endTime: body.endTime,
+        maxEnrollment: body.maxEnrollment,
+        enrolledStudents: assignments.enrolledStudents,
+      }], { session });
+      return { status: 201, campusClass };
     });
+
+    if (result.status !== 201) return res.status(result.status).json({ message: result.message });
+    const campusClass = result.campusClass;
 
     const populatedClass = await classPopulation(
       CampusClass.findById(campusClass._id),
@@ -179,24 +213,30 @@ async function updateClass(req, res) {
       return res.status(400).json({ message: "Provide valid class details" });
     }
 
-    const assignments = await validateAssignments(body);
+    if (!mongoose.isValidObjectId(req.params.id)) return res.status(400).json({ message: "Invalid class ID." });
+    const result = await runTransaction(async (session) => {
+      const enrolledStudents = [...new Set(body.enrolledStudents || [])];
+      if (enrolledStudents.some((studentId) => !mongoose.isValidObjectId(studentId))) {
+        return { status: 400, message: "One or more student selections are invalid" };
+      }
+      if (!await lockUserReference(User, body.faculty, "faculty", session)) {
+        return { status: 400, message: "Select an existing faculty account" };
+      }
+      if (!await lockStudentReferences(User, enrolledStudents, session)) {
+        return { status: 400, message: "All enrolled users must be student accounts" };
+      }
+      if (!await lockRoomReference(Room, body.room, session)) return { status: 400, message: "Select an existing room" };
 
-    if (assignments.error) {
-      return res.status(400).json({ message: assignments.error });
-    }
+      const campusClass = await CampusClass.findById(req.params.id).session(session);
+      if (!campusClass) return { status: 404, message: "Class not found" };
+      const assignments = await validateAssignments(body, session);
+      if (assignments.error) return { status: 400, message: assignments.error };
+      if (await findScheduleConflict(body, req.params.id, session)) {
+        return { status: 409, message: "The faculty member or room already has a class at that time" };
+      }
 
-    const conflict = await findScheduleConflict(body, req.params.id);
-
-    if (conflict) {
-      return res.status(409).json({
-        message: "The faculty member or room already has a class at that time",
-      });
-    }
-
-    const existingClass = await CampusClass.findById(req.params.id).select("room courseName");
-    const campusClass = await CampusClass.findByIdAndUpdate(
-      req.params.id,
-      {
+      const oldRoomId = campusClass.room;
+      Object.assign(campusClass, {
         courseName: body.courseName.trim(),
         courseCode: body.courseCode.trim().toUpperCase(),
         section: body.section.trim(),
@@ -207,16 +247,16 @@ async function updateClass(req, res) {
         endTime: body.endTime,
         maxEnrollment: body.maxEnrollment,
         enrolledStudents: assignments.enrolledStudents,
-      },
-      { new: true, runValidators: true },
-    );
+      });
+      await campusClass.save({ session });
+      return { status: 200, campusClass, oldRoomId };
+    });
 
-    if (!campusClass) {
-      return res.status(404).json({ message: "Class not found" });
-    }
+    if (result.status !== 200) return res.status(result.status).json({ message: result.message });
+    const { campusClass, oldRoomId } = result;
 
     const [oldRoom, newRoom] = await Promise.all([
-      existingClass?.room ? Room.findById(existingClass.room).select("name building").lean() : null,
+      oldRoomId ? Room.findById(oldRoomId).select("name building").lean() : null,
       Room.findById(campusClass.room).select("name building").lean(),
     ]);
     await recordActivity({ actor: req.user.id, action: "Classroom allocation updated", entityType: "class", entityId: campusClass._id, summary: `${campusClass.courseName} room allocation changed from ${oldRoom?.name || "unassigned"} to ${newRoom?.name || "a room"}.` });
@@ -231,11 +271,25 @@ async function updateClass(req, res) {
 
 async function deleteClass(req, res) {
   try {
-    const campusClass = await CampusClass.findByIdAndDelete(req.params.id);
+    if (!mongoose.isValidObjectId(req.params.id)) return res.status(400).json({ message: "Invalid class ID." });
+    const result = await runTransaction(async (session) => {
+      const campusClass = await CampusClass.findById(req.params.id).session(session);
+      if (!campusClass) return { status: 404, message: "Class not found" };
+      const lock = await CampusClass.updateOne(
+        { _id: campusClass._id },
+        { $inc: { referenceVersion: 1 } },
+        { session },
+      );
+      if (!lock.matchedCount) return { status: 404, message: "Class not found" };
+      if (await Attendance.exists({ campusClass: campusClass._id }).session(session)) {
+        return { status: 409, message: "Class cannot be deleted because attendance records reference it. Preserve the class history or remove attendance through an authorized retention process." };
+      }
+      await CampusClass.deleteOne({ _id: campusClass._id }, { session });
+      return { status: 200, campusClass };
+    });
 
-    if (!campusClass) {
-      return res.status(404).json({ message: "Class not found" });
-    }
+    if (result.status !== 200) return res.status(result.status).json({ message: result.message });
+    const { campusClass } = result;
 
     const removedRoom = await Room.findById(campusClass.room).select("name building").lean();
     await recordActivity({ actor: req.user.id, action: "Classroom allocation removed", entityType: "class", entityId: campusClass._id, summary: `${campusClass.courseName} allocation in ${removedRoom?.name || "a room"} was removed.` });

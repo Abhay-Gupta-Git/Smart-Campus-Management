@@ -92,6 +92,49 @@ The API restricts browser origins to `CLIENT_URL`, sends security headers, limit
 
 Administrators create classes from the Classes page. A class requires a subject name, course code, section, existing faculty account, room, weekday, start/end times, and maximum enrollment. Students can be enrolled when creating or editing a class. The API checks the selected records, prevents duplicate course-code/section pairs, rejects overlapping room or faculty schedules, and stores classes in MongoDB. Students see only enrolled classes; faculty see only their assignments.
 
+## Booking approval and local MongoDB replica sets
+
+Only administrators can approve or reject room booking requests. The backend enforces this on `PATCH /api/bookings/:id/status`; the frontend shows those controls only in the Admin workspace. Approval uses a MongoDB transaction and a room schedule write to serialize concurrent decisions, so overlapping approvals cannot both succeed.
+
+MongoDB transactions require a replica set (or a sharded cluster). A default standalone local MongoDB server can run CampusOS, but booking creation and approval/rejection, class creation and updates, attendance marking, complaint submission, and protected room/student/class/faculty deletion return a clear `503` until MongoDB supports transactions. Do not remove transaction handling to work around this requirement.
+
+For local development with an existing database, configure the MongoDB instance already in use rather than creating a new database:
+
+1. Identify the active MongoDB service and its configuration file. Back up the existing database and configuration before changing the service configuration. Do not delete the database directory or run setup/reset commands.
+2. In the active `mongod` configuration, add or merge this setting at the top level (keep any existing settings):
+
+   ```yaml
+   replication:
+     replSetName: rs0
+   ```
+
+3. Restart that MongoDB service, then connect to that same instance using your normal local `mongosh` connection. Check `rs.status()`. If the instance has not been initialized as a replica set, initialize it once:
+
+   ```javascript
+   rs.initiate({ _id: "rs0", members: [{ _id: 0, host: "127.0.0.1:27017" }] })
+   ```
+
+   If the set is already initialized, do not run `rs.initiate` again. Wait until `rs.status()` reports a primary. The member address must be reachable by the backend process; adjust it if your local MongoDB listens on another address or port.
+4. In your private `backend/.env`, add `replicaSet=rs0` to the existing `MONGO_URI` query string (use `&` if the URI already has query parameters). Keep the same database name and any existing authentication/options. Do not commit `.env` or paste credentials into documentation.
+5. Restart the backend. The existing API will use the same database with transaction support enabled. A single-node replica set is suitable for local development only; use a properly configured replica set or sharded cluster in production.
+
+## Referential integrity and attendance index migration
+
+Room deletion returns `409` while a class, booking, inspection, or maintenance complaint references the room. Student deletion returns `409` while enrollment, attendance, booking, complaint, notification, activity, notice, or inspection history references the account. Class deletion returns `409` when attendance history exists. These checks preserve the existing records; they do not cascade-delete them. Reference writes and protected deletions use transactions and lock the parent record so a concurrent create cannot pass the reference check unnoticed.
+
+Attendance is unique per non-null class, student, and date. The unique partial index excludes legacy attendance records whose `campusClass` is null; the API requires a class when marking new attendance. Before deploying the index change:
+
+1. Back up the intended database and stop CampusOS API instances so no attendance writes run during the migration.
+2. Run `npm run migrate:integrity-indexes --prefix backend` against the same database configured in `backend/.env`.
+3. If duplicates are reported, the script exits without changing records or indexes. Review the listed IDs and use an approved retention decision to resolve duplicates manually; do not delete rows automatically. Then rerun the migration.
+4. Once the script reports success, start the API instances again. The migration replaces the old non-unique compound attendance index with the unique one, ensures the existing attendance query indexes and new room/complaint reference indexes, and removes the redundant single-field complaint `room` and `assignedTo` indexes after confirming their compound replacements exist.
+
+The migration must be run once per database before relying on duplicate prevention. The attendance schema disables automatic index creation so the unique index is not attempted before the duplicate scan. The migration also checks for duplicate notification deduplication keys and creates the sparse unique notification key index; it does not alter notification records. The migration checks for duplicates before replacing any existing compound index. The schema adds a room-leading class index for room reference checks; the existing day-leading class schedule index is retained for timetable conflict queries.
+
+Notification writes are best-effort and idempotent per event and recipient. Run the same integrity-index migration before deploying notification deduplication so concurrent retries cannot create duplicate event notices. Notifications remain private to their recipient; opening one marks it read and navigates to the linked record. Activity history is visible to admins globally and scoped for other roles to actions or records they can access.
+
+`GET /api/notifications` returns the current user's notifications. `PATCH /api/notifications/:id/read`, `PATCH /api/notifications/:id/unread`, and `PATCH /api/notifications/read-all` only update that user's records. New notifications include `entityType`, `entityId`, and `targetPage`; linked collection endpoints accept `recordId` to open the specific record within the caller's existing permissions.
+
 ## Useful commands
 
 ```powershell

@@ -1,32 +1,27 @@
 const mongoose = require("mongoose");
 const Complaint = require("../models/Complaint");
-const Notification = require("../models/Notification");
 const Room = require("../models/Room");
 const User = require("../models/User");
 const recordActivity = require("../utils/activityLog");
-const { readPagination, executeListQuery } = require("../utils/pagination");
+const { createNotifications } = require("../utils/notifications");
+const { readPagination, readSearch, readSort, escapeRegex, executeListQuery } = require("../utils/pagination");
 const { hasOnlyFields } = require("../utils/validation");
+const { runTransaction, isTransactionUnsupported, lockRoomReference } = require("../utils/transactions");
 
 const equipmentTypes = ["Fan", "AC", "Projector", "Light"];
 const priorities = ["Low", "Normal", "High", "Urgent"];
 const statuses = ["Open", "In progress", "Pending Verification", "Resolved", "Closed"];
 
-async function notifyUsers(recipients, complaint, title, message) {
-  const uniqueIds = [...new Set(recipients.filter(Boolean).map((id) => id.toString()))];
-  if (!uniqueIds.length) return;
-  try {
-    await Notification.insertMany(uniqueIds.map((recipient) => ({ recipient, complaint: complaint?._id || complaint || null, title, message })));
-  } catch (error) {
-    console.error("Complaint notification failed:", error.name || "Error");
-  }
+async function notifyUsers(recipients, complaint, title, message, eventId) {
+  await createNotifications({ recipients, title, message, entityType: "complaint", entityId: complaint._id, targetPage: "Complaints", eventId });
 }
 
-async function notifyRole(role, complaint, title, message, extraRecipients = []) {
+async function notifyRole(role, complaint, title, message, eventId) {
   try {
     const users = await User.find({ role }).select("_id").lean();
-    await notifyUsers([...users.map((user) => user._id), ...extraRecipients], complaint, title, message);
+    await notifyUsers(users.map((user) => user._id), complaint, title, message, eventId);
   } catch (error) {
-    console.error("Role notification failed:", error.name || "Error");
+    console.error("Role notification recipients lookup failed:", JSON.stringify({ event: "notification_recipient_lookup_failed", role, entityId: complaint._id.toString(), error: error.name || "Error", code: error.code || "unknown" }));
   }
 }
 
@@ -56,7 +51,11 @@ async function listComplaints(req, res) {
       baseFilter = { $or: [{ submittedBy: req.user.id }, { room: { $ne: null }, status: "Pending Verification" }] };
     }
 
-    const filterParts = [baseFilter];
+    const filterParts = Object.keys(baseFilter).length ? [baseFilter] : [];
+    if (req.query.recordId !== undefined) {
+      if (!validId(req.query.recordId)) return res.status(400).json({ message: "Record filter is invalid." });
+      filterParts.push({ _id: req.query.recordId });
+    }
     if (req.query.room) {
       if (!validId(req.query.room)) return res.status(400).json({ message: "Invalid room filter." });
       filterParts.push({ room: req.query.room });
@@ -73,12 +72,40 @@ async function listComplaints(req, res) {
       if (req.query.assignee === "unassigned") filterParts.push({ assignedTo: null });
       else if (!validId(req.query.assignee)) return res.status(400).json({ message: "Invalid assignee filter." });
       else filterParts.push({ assignedTo: req.query.assignee });
+    } else if (req.query.assignee !== undefined && req.user.role !== "admin") {
+      return res.status(400).json({ message: "Assignee filtering is only available to administrators." });
     }
 
-    const filter = filterParts.length === 1 ? filterParts[0] : { $and: filterParts };
+    if (req.query.roomSearch !== undefined) {
+      if (typeof req.query.roomSearch !== "string" || req.query.roomSearch.trim().length > 80) return res.status(400).json({ message: "Room search must be 80 characters or fewer." });
+      const value = req.query.roomSearch.trim();
+      if (value) {
+        const regex = { $regex: escapeRegex(value), $options: "i" };
+        const roomIds = await Room.find({ $or: [{ name: regex }, { building: regex }] }).distinct("_id");
+        filterParts.push({ room: { $in: roomIds } });
+      }
+    }
+
+    const search = readSearch(req, res);
+    if (search === false) return;
+    if (search) {
+      const regex = { $regex: escapeRegex(search), $options: "i" };
+      const searchParts = ["title", "description", "category"].map((field) => ({ [field]: regex }));
+      const lookups = [Room.find({ $or: [{ name: regex }, { building: regex }] }).distinct("_id")];
+      if (["admin", "faculty"].includes(req.user.role)) lookups.push(User.find({ name: regex }).distinct("_id"));
+      if (req.user.role === "admin") lookups.push(User.find({ role: "technician", name: regex }).distinct("_id"));
+      const [roomIds, submitterIds = [], technicianIds = []] = await Promise.all(lookups);
+      if (roomIds.length) searchParts.push({ room: { $in: roomIds } });
+      if (submitterIds.length) searchParts.push({ submittedBy: { $in: submitterIds } });
+      if (technicianIds.length) searchParts.push({ assignedTo: { $in: technicianIds } });
+      filterParts.push({ $or: searchParts });
+    }
+    const filter = filterParts.length === 0 ? {} : filterParts.length === 1 ? filterParts[0] : { $and: filterParts };
     const pagination = readPagination(req, res);
     if (pagination === false) return;
-    const complaints = await executeListQuery({ query: populatedComplaints(Complaint.find(filter).sort("-createdAt")).lean(), Model: Complaint, filter, pagination, res });
+    const sort = readSort(req, res, ["createdAt", "updatedAt", "title", "status", "priority"], "createdAt", "desc");
+    if (sort === false) return;
+    const complaints = await executeListQuery({ query: populatedComplaints(Complaint.find(filter).sort(sort)).lean(), Model: Complaint, filter, pagination, res });
     return res.json(complaints);
   } catch (error) {
     console.error("List complaints failed:", error.name || "Error");
@@ -100,20 +127,28 @@ async function createComplaint(req, res) {
   const priority = body.priority || "Normal";
   if (!priorities.includes(priority)) return res.status(400).json({ message: "Choose a valid priority." });
   try {
-    if (body.room && !(await Room.exists({ _id: body.room }))) return res.status(404).json({ message: "Room not found." });
-    const complaint = await Complaint.create({
-      title: body.title.trim(),
-      description: body.description.trim(),
-      category: typeof body.category === "string" && body.category.trim() ? body.category.trim().slice(0, 80) : body.room ? "Room maintenance" : "General",
-      room: body.room || null,
-      equipment: body.room ? body.equipment : null,
-      priority,
-      submittedBy: req.user.id,
-      history: [{ actor: req.user.id, action: body.room ? "Facility issue reported" : "Complaint submitted", note: body.description.trim() }],
-    });
-    await recordActivity({ actor: req.user.id, action: "Complaint submitted", entityType: "complaint", entityId: complaint._id, summary: `Submitted: ${complaint.title}` });
-    if (complaint.room) {
-      const room = await Room.findById(complaint.room);
+    const result = await runTransaction(async (session) => {
+      const userLock = await User.updateOne(
+        { _id: req.user.id },
+        { $inc: { referenceVersion: 1 } },
+        { session },
+      );
+      if (!userLock.matchedCount) return { status: 401, message: "Account no longer exists." };
+      if (body.room && !await lockRoomReference(Room, body.room, session)) return { status: 404, message: "Room not found." };
+
+      const room = body.room ? await Room.findById(body.room).session(session) : null;
+      if (body.room && !room) return { status: 404, message: "Room not found." };
+      const [complaint] = await Complaint.create([{
+        title: body.title.trim(),
+        description: body.description.trim(),
+        category: typeof body.category === "string" && body.category.trim() ? body.category.trim().slice(0, 80) : body.room ? "Room maintenance" : "General",
+        room: body.room || null,
+        equipment: body.room ? body.equipment : null,
+        priority,
+        submittedBy: req.user.id,
+        history: [{ actor: req.user.id, action: body.room ? "Facility issue reported" : "Complaint submitted", note: body.description.trim() }],
+      }], { session });
+
       if (room) {
         const item = room.equipment.find((entry) => entry.type === complaint.equipment);
         const reportedEquipment = {
@@ -124,14 +159,24 @@ async function createComplaint(req, res) {
         if (item) Object.assign(item, reportedEquipment);
         else room.equipment.push(reportedEquipment);
         room.maintenanceHold = true;
-        await room.save();
+        await room.save({ session });
       }
-      await notifyRole("admin", complaint, "New facility issue", `${complaint.equipment} issue reported in ${await getRoomLabel(complaint.room)}.`);
-    }
+      return { status: 201, complaint };
+    });
+    if (result.status !== 201) return res.status(result.status).json({ message: result.message });
+    const { complaint } = result;
+
+    await recordActivity({ actor: req.user.id, action: "Complaint submitted", entityType: "complaint", entityId: complaint._id, summary: `Submitted: ${complaint.title}` });
+    const complaintContext = complaint.room
+      ? `${complaint.equipment} issue reported in ${await getRoomLabel(complaint.room)}.`
+      : `A new complaint was submitted: ${complaint.title}.`;
+    await notifyRole("admin", complaint, "New complaint submitted", complaintContext, `complaint:${complaint._id}:submitted`);
     return res.status(201).json(await populatedComplaints(Complaint.findById(complaint._id)));
   } catch (error) {
     console.error("Create complaint failed:", error.name || "Error");
-    return res.status(400).json({ message: "Unable to submit complaint. Check the required fields." });
+    if (isTransactionUnsupported(error)) return res.status(503).json({ message: "Complaint submission requires MongoDB transaction support. Configure MongoDB as a replica set and retry." });
+    if (error.name === "ValidationError" || error.name === "CastError") return res.status(400).json({ message: "Unable to submit complaint. Check the required fields." });
+    return res.status(500).json({ message: "Unable to submit complaint. Please retry." });
   }
 }
 
@@ -169,7 +214,7 @@ async function assignComplaint(req, res) {
     await complaint.save();
     await recordActivity({ actor: req.user.id, action: technician ? "Complaint assigned" : "Complaint unassigned", entityType: "complaint", entityId: complaint._id, summary: `${complaint.title}${technician ? ` assigned to ${technician.name}` : " assignment cleared"}.` });
     const label = await getRoomLabel(complaint.room);
-    await notifyUsers([complaint.submittedBy, previousAssignee, technician?._id], complaint, technician ? "Maintenance issue assigned" : "Maintenance assignment updated", `${complaint.equipment} issue for ${label} is ${technician ? `assigned to ${technician.name}` : "unassigned"}.`);
+    await notifyUsers([complaint.submittedBy, previousAssignee, technician?._id], complaint, technician ? "Maintenance issue assigned" : "Maintenance assignment updated", `${complaint.equipment} issue for ${label} is ${technician ? `assigned to ${technician.name}` : "unassigned"}.`, `complaint-history:${complaint.history.at(-1)._id}`);
     return res.json(await populatedComplaints(Complaint.findById(complaint._id)));
   } catch (error) {
     console.error("Assign complaint failed:", error.name || "Error");
@@ -211,9 +256,10 @@ async function updateWork(req, res) {
     await complaint.save();
     await recordActivity({ actor: req.user.id, action: status === "Pending Verification" ? "Repair submitted for verification" : "Maintenance progress updated", entityType: "complaint", entityId: complaint._id, summary: `${complaint.title} moved to ${status}.` });
     const label = await getRoomLabel(complaint.room);
-    await notifyUsers([complaint.submittedBy, req.user.id], complaint, status === "Pending Verification" ? "Repair ready for verification" : "Maintenance work updated", `${complaint.equipment} issue for ${label}: ${status === "Pending Verification" ? "repair submitted for faculty verification" : "work progress updated"}.`);
-    await notifyRole("admin", complaint, "Maintenance work updated", `${complaint.equipment} issue for ${label} is now ${status}.`);
-    if (status === "Pending Verification") await notifyRole("faculty", complaint, "Repair needs verification", `${complaint.equipment} repair for ${label} is ready for faculty verification.`);
+    const eventId = `complaint-history:${complaint.history.at(-1)._id}`;
+    await notifyRole("admin", complaint, "Maintenance work updated", `${complaint.equipment} issue for ${label} is now ${status}.`, eventId);
+    if (status === "Pending Verification") await notifyRole("faculty", complaint, "Repair needs verification", `${complaint.equipment} repair for ${label} is ready for faculty verification.`, eventId);
+    await notifyUsers([complaint.submittedBy], complaint, status === "Pending Verification" ? "Repair ready for verification" : "Maintenance work updated", `${complaint.equipment} issue for ${label}: ${status === "Pending Verification" ? "repair submitted for faculty verification" : "work progress updated"}.`, eventId);
     return res.json(await populatedComplaints(Complaint.findById(complaint._id)));
   } catch (error) {
     console.error("Update maintenance work failed:", error.name || "Error");
@@ -250,7 +296,7 @@ async function verifyRepair(req, res) {
     const label = await getRoomLabel(complaint.room);
     if (decision === "accept") await refreshRoomMaintenance(complaint);
     const recipients = [complaint.assignedTo, complaint.submittedBy];
-    await notifyUsers(recipients, complaint, decision === "accept" ? "Repair verified" : "Repair verification rejected", decision === "accept" ? `${complaint.equipment} repair for ${label} was accepted and the issue is closed.` : `${complaint.equipment} repair for ${label} was rejected and returned for more work.`);
+    await notifyUsers(recipients, complaint, decision === "accept" ? "Repair verified" : "Repair verification rejected", decision === "accept" ? `${complaint.equipment} repair for ${label} was accepted and the issue is closed.` : `${complaint.equipment} repair for ${label} was rejected and returned for more work.`, `complaint-history:${complaint.history.at(-1)._id}`);
     return res.json(await populatedComplaints(Complaint.findById(complaint._id)));
   } catch (error) {
     console.error("Repair verification failed:", error.name || "Error");
@@ -304,7 +350,7 @@ async function updateGenericComplaint(req, res) {
     complaint.history.push({ actor: req.user.id, action: "Complaint status updated", fromStatus: oldStatus, toStatus: status });
     await complaint.save();
     await recordActivity({ actor: req.user.id, action: "Complaint status updated", entityType: "complaint", entityId: complaint._id, summary: `${complaint.title} moved to ${status}.` });
-    await notifyUsers([complaint.submittedBy], complaint, "Complaint updated", `Your complaint status changed to ${status}.`);
+    await notifyUsers([complaint.submittedBy], complaint, "Complaint updated", `Your complaint status changed to ${status}.`, `complaint-history:${complaint.history.at(-1)._id}`);
     return res.json(await populatedComplaints(Complaint.findById(complaint._id)));
   } catch (error) {
     console.error("Update complaint failed:", error.name || "Error");

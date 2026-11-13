@@ -28,6 +28,7 @@ const roomSchema = new mongoose.Schema(
     inspectionHistory: { type: [inspectionHistorySchema], default: [], select: false },
     available: { type: Boolean, default: true },
     scheduleVersion: { type: Number, default: 0, select: false },
+    referenceVersion: { type: Number, default: 0, select: false },
     buildingKey: { type: String, select: false },
     roomNumberKey: { type: String, select: false },
   },

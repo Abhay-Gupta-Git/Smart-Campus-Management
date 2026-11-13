@@ -20,10 +20,17 @@ const attendanceSchema = new mongoose.Schema(
     },
     markedBy: { type: mongoose.Schema.Types.ObjectId, ref: "User" },
   },
-  { timestamps: true },
+  { timestamps: true, autoIndex: false },
 );
 
-attendanceSchema.index({ campusClass: 1, student: 1, date: 1 });
+attendanceSchema.index(
+  { campusClass: 1, student: 1, date: 1 },
+  {
+    unique: true,
+    partialFilterExpression: { campusClass: { $type: "objectId" } },
+    name: "uniq_attendance_class_student_date",
+  },
+);
 attendanceSchema.index({ student: 1, date: -1 });
 attendanceSchema.index({ campusClass: 1, date: -1 });
 

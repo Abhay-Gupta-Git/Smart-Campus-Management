@@ -3,6 +3,7 @@ const User = require("../models/User");
 const { hashPassword, verifyPassword, isAcceptablePassword, MIN_PASSWORD_LENGTH } = require("../utils/password");
 const { normalizeRole } = require("../utils/roles");
 const { isValidEmail, hasOnlyFields } = require("../utils/validation");
+const recordActivity = require("../utils/activityLog");
 
 function getPublicUser(user) {
   return {
@@ -70,6 +71,8 @@ async function register(req, res) {
       studentId: studentId?.trim() || undefined,
       department: department?.trim() || undefined,
     });
+
+    await recordActivity({ actor: user._id, action: "Student account registered", entityType: "account", entityId: user._id, summary: "Registered a student account." });
 
     return res.status(201).json({
       message: "Registration successful",

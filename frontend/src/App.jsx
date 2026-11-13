@@ -1,4 +1,4 @@
-import React, { useEffect, useRef, useState } from "react";
+import React, { useCallback, useEffect, useRef, useState } from "react";
 import {
   AlertCircle,
   ArrowUpRight,
@@ -55,12 +55,13 @@ const resourceEndpoints = {
 };
 
 async function requestApi(path, token, options = {}) {
+  const { withMeta = false, ...requestOptions } = options;
   const response = await fetch(`${API_URL}${path}`, {
-    ...options,
+    ...requestOptions,
     headers: {
       "Content-Type": "application/json",
       ...(token ? { Authorization: `Bearer ${token}` } : {}),
-      ...options.headers,
+      ...requestOptions.headers,
     },
   });
 
@@ -70,7 +71,16 @@ async function requestApi(path, token, options = {}) {
     throw new Error(responseData.message || "Request failed");
   }
 
-  return responseData;
+  if (!withMeta) return responseData;
+  return {
+    data: responseData,
+    pagination: {
+      total: Number(response.headers.get("X-Total-Count")) || 0,
+      page: Number(response.headers.get("X-Page")) || 1,
+      pageSize: Number(response.headers.get("X-Page-Size")) || responseData.length,
+      totalPages: Number(response.headers.get("X-Total-Pages")) || 0,
+    },
+  };
 }
 
 function App() {
@@ -83,6 +93,8 @@ function App() {
   const [dashboard, setDashboard] = useState({});
   const [isDashboardLoading, setIsDashboardLoading] = useState(true);
   const [records, setRecords] = useState([]);
+  const [totalRecords, setTotalRecords] = useState(0);
+  const [listQuery, setListQuery] = useState({ page: 1, limit: 10 });
   const [searchText, setSearchText] = useState("");
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [errorMessage, setErrorMessage] = useState("");
@@ -91,10 +103,29 @@ function App() {
   const [editingRecord, setEditingRecord] = useState(null);
   const [inspectionRoom, setInspectionRoom] = useState(null);
   const [technicians, setTechnicians] = useState([]);
-  const [roomOptions, setRoomOptions] = useState([]);
   const [isSidebarOpen, setIsSidebarOpen] = useState(false);
   const [pendingDelete, setPendingDelete] = useState(null);
   const [isDeleting, setIsDeleting] = useState(false);
+  const [notificationTarget, setNotificationTarget] = useState(null);
+  const activeListRequest = useRef(null);
+  const handleListQueryChange = useCallback((query) => setListQuery(query), []);
+  const navigateToPage = useCallback((nextPage) => {
+    setNotificationTarget(null);
+    setListQuery({ page: 1, limit: 10 });
+    setSearchText("");
+    setPage(nextPage);
+  }, []);
+  const navigateToNotification = useCallback((notification) => {
+    const entityType = notification.entityType || (notification.complaint ? "complaint" : null);
+    const targetPage = notification.targetPage || ({ booking: "Room bookings", room: "Classrooms", class: "Classes", attendance: "Attendance", complaint: "Complaints", notice: "Notices", account: "Activity history" })[entityType] || (/booking/i.test(notification.title || "") ? "Room bookings" : null);
+    if (!targetPage) return;
+    const recordId = notification.entityId?._id || notification.entityId || notification.complaint?._id || notification.complaint;
+    const target = recordId ? { page: targetPage, id: String(recordId) } : null;
+    setNotificationTarget(target);
+    setSearchText("");
+    setPage(targetPage);
+    setListQuery({ page: 1, limit: 10, ...(target?.id ? { recordId: target.id } : {}) });
+  }, []);
 
   useEffect(() => {
     if (!token) {
@@ -127,41 +158,57 @@ function App() {
 
   useEffect(() => {
     if (!token) return;
+    const controller = new AbortController();
+    loadRecords(page, listQuery, controller);
+    return () => controller.abort();
+  }, [token, page, user?.role, listQuery]);
 
-    loadRecords(page);
-    if (page === "Complaints") {
-      requestApi("/rooms", token)
-        .then(setRoomOptions)
-        .catch((error) => setErrorMessage(error.message));
-    } else {
-      setRoomOptions([]);
-    }
+  useEffect(() => {
+    if (!token) return;
+    let active = true;
     if (page === "Complaints" && user?.role === "admin") {
-      requestApi("/admin/users/technicians", token)
-        .then(setTechnicians)
-        .catch((error) => setErrorMessage(error.message));
+      requestApi("/admin/users/technicians?limit=100", token)
+        .then((result) => { if (active) setTechnicians(result); })
+        .catch((error) => { if (active && error.name !== "AbortError") setErrorMessage(error.message); });
     } else {
       setTechnicians([]);
     }
+    return () => { active = false; };
   }, [token, page, user?.role]);
 
-  async function loadRecords(selectedPage = page) {
+  async function loadRecords(selectedPage = page, query = listQuery, controller = new AbortController()) {
+    activeListRequest.current?.abort();
+    activeListRequest.current = controller;
+    const signal = controller.signal;
     const endpoint = resourceEndpoints[selectedPage];
 
     if (!endpoint) {
       setRecords([]);
+      setTotalRecords(0);
+      setIsLoading(false);
+      if (activeListRequest.current === controller) activeListRequest.current = null;
       return;
     }
 
     setIsLoading(true);
+    setRecords([]);
+    setTotalRecords(0);
     try {
-      const results = await requestApi(endpoint, token);
-      setRecords(results);
+      const params = new URLSearchParams();
+      Object.entries(query || {}).forEach(([key, value]) => {
+        if (value !== undefined && value !== null && value !== "") params.set(key, value);
+      });
+      const result = await requestApi(`${endpoint}?${params.toString()}`, token, { signal, withMeta: true });
+      setRecords(result.data);
+      setTotalRecords(result.pagination.total);
     } catch (error) {
+      if (error.name === "AbortError") return;
       setRecords([]);
+      setTotalRecords(0);
       setErrorMessage(error.message);
     } finally {
-      setIsLoading(false);
+      if (!signal?.aborted) setIsLoading(false);
+      if (activeListRequest.current === controller) activeListRequest.current = null;
     }
   }
 
@@ -241,7 +288,7 @@ function App() {
         activePage={page}
         dashboard={dashboard}
         user={user}
-        onNavigate={setPage}
+        onNavigate={navigateToPage}
         onLogout={handleLogout}
         isOpen={isSidebarOpen}
         onClose={() => setIsSidebarOpen(false)}
@@ -255,6 +302,7 @@ function App() {
           searchText={searchText}
           onSearch={setSearchText}
           onMenu={() => setIsSidebarOpen((open) => !open)}
+          onNavigateNotification={navigateToNotification}
         />
 
         <section className="content">
@@ -287,15 +335,19 @@ function App() {
           )}
 
           {page === "Overview" ? (
-            <DashboardPage dashboard={dashboard} isLoading={isDashboardLoading} onNavigate={setPage} />
+            <DashboardPage dashboard={dashboard} isLoading={isDashboardLoading} onNavigate={navigateToPage} />
           ) : page === "Analytics" && user?.role === "admin" ? (
             <AnalyticsDashboardPage token={token} />
           ) : page === "Room recommendations" ? (
             <RoomRecommendationPage token={token} />
           ) : (
             <ResourceTable
+              key={`${page}:${notificationTarget?.page === page ? notificationTarget.id : ""}`}
               page={page}
+              initialRecordId={notificationTarget?.page === page ? notificationTarget.id : ""}
               records={records}
+              totalRecords={totalRecords}
+              onQueryChange={handleListQueryChange}
               isLoading={isLoading}
               searchText={searchText}
               onSearch={setSearchText}
@@ -307,6 +359,7 @@ function App() {
                   "Students",
                   "Technicians",
                   "Classrooms",
+                  "Room bookings",
                   "Notices",
                   "Complaints",
                 ].includes(page)
@@ -314,7 +367,6 @@ function App() {
               userId={user?.id || user?._id}
               userRole={user?.role}
               technicians={technicians}
-              roomOptions={roomOptions}
               canInspectRoom={["admin", "faculty", "technician"].includes(user?.role)}
               onInspectRoom={setInspectionRoom}
               onEdit={(record) => {
@@ -504,7 +556,7 @@ function Sidebar({ activePage, dashboard, user, onNavigate, onLogout, isOpen, on
   );
 }
 
-function TopBar({ page, user, token, searchText, onSearch, onMenu }) {
+function TopBar({ page, user, token, searchText, onSearch, onMenu, onNavigateNotification }) {
   const searchInput = useRef(null);
 
   useEffect(() => {
@@ -536,40 +588,60 @@ function TopBar({ page, user, token, searchText, onSearch, onMenu }) {
           />
           <kbd>Ctrl K</kbd>
         </div>
-        <NotificationBell token={token} />
+        <NotificationBell token={token} onNavigate={onNavigateNotification} />
         <b className="userdot">{user?.name?.[0] || "A"}</b>
       </div>
     </header>
   );
 }
 
-function NotificationBell({ token }) {
+function NotificationBell({ token, onNavigate }) {
   const [notifications, setNotifications] = useState([]);
   const [isOpen, setIsOpen] = useState(false);
   const [unreadCount, setUnreadCount] = useState(0);
   const [loading, setLoading] = useState(false);
   const [readingId, setReadingId] = useState("");
   const [markingAllRead, setMarkingAllRead] = useState(false);
+  const [notificationError, setNotificationError] = useState("");
+  const unreadRequestId = useRef(0);
 
   async function loadUnreadCount() {
+    const requestId = ++unreadRequestId.current;
     try {
       const result = await requestApi("/notifications/unread-count", token);
+      if (requestId !== unreadRequestId.current) return;
       setUnreadCount(result.unreadCount || 0);
-    } catch { /* Keep the header available if notifications are unavailable. */ }
+      setNotificationError("");
+    } catch (error) { if (requestId === unreadRequestId.current && error.name !== "AbortError") setNotificationError(error.message); }
   }
 
   async function loadNotifications() {
     setLoading(true);
     try {
       const items = await requestApi("/notifications", token);
-      setNotifications(items);
-      setUnreadCount(items.filter((item) => !item.readAt).length);
+      const list = Array.isArray(items) ? items : [];
+      setNotifications(list);
+      setUnreadCount(list.filter((item) => !item.readAt).length);
+      setNotificationError("");
       await loadUnreadCount();
-    } catch { /* Header remains usable if notifications are unavailable. */ }
+    } catch (error) { if (error.name !== "AbortError") setNotificationError(error.message); }
     finally { setLoading(false); }
   }
 
-  useEffect(() => { loadUnreadCount(); }, [token]);
+  useEffect(() => {
+    let active = true;
+    const refresh = () => { if (active && !document.hidden) loadUnreadCount(); };
+    refresh();
+    const timer = setInterval(refresh, 30000);
+    window.addEventListener("focus", refresh);
+    document.addEventListener("visibilitychange", refresh);
+    return () => {
+      active = false;
+      clearInterval(timer);
+      window.removeEventListener("focus", refresh);
+      document.removeEventListener("visibilitychange", refresh);
+    };
+  }, [token]);
 
   async function openNotifications() {
     const nextOpen = !isOpen;
@@ -584,8 +656,29 @@ function NotificationBell({ token }) {
       await requestApi(`/notifications/${notification._id}/read`, token, { method: "PATCH" });
       setNotifications((items) => items.map((item) => item._id === notification._id ? { ...item, readAt: new Date().toISOString() } : item));
       setUnreadCount((count) => Math.max(0, count - 1));
-    } catch { /* The notification can still be read in the list. */ }
+      setNotificationError("");
+    } catch (error) { setNotificationError(error.message); throw error; }
     finally { setReadingId(""); }
+  }
+
+  async function markUnread(notification) {
+    if (!notification.readAt || readingId === notification._id) return;
+    setReadingId(notification._id);
+    try {
+      await requestApi(`/notifications/${notification._id}/unread`, token, { method: "PATCH" });
+      setNotifications((items) => items.map((item) => item._id === notification._id ? { ...item, readAt: null } : item));
+      setUnreadCount((count) => count + 1);
+      setNotificationError("");
+    } catch (error) { setNotificationError(error.message); }
+    finally { setReadingId(""); }
+  }
+
+  async function openNotification(notification) {
+    try {
+      await markRead(notification);
+      setIsOpen(false);
+      onNavigate(notification);
+    } catch { /* Keep the item visible so the user can retry. */ }
   }
 
   async function markAllRead() {
@@ -595,7 +688,8 @@ function NotificationBell({ token }) {
       await requestApi("/notifications/read-all", token, { method: "PATCH" });
       setNotifications((items) => items.map((item) => ({ ...item, readAt: item.readAt || new Date().toISOString() })));
       setUnreadCount(0);
-    } catch { /* Leave current notification state visible on request failure. */ }
+      setNotificationError("");
+    } catch (error) { setNotificationError(error.message); }
     finally { setMarkingAllRead(false); }
   }
 
@@ -607,12 +701,16 @@ function NotificationBell({ token }) {
       {isOpen && (
         <div className="notification-popover">
           <div className="notification-popover-head"><strong>Notifications</strong><span>{unreadCount} unread</span>{unreadCount > 0 && <button disabled={markingAllRead} onClick={markAllRead}>{markingAllRead ? "Saving…" : "Mark all read"}</button>}</div>
+          {notificationError && <div className="notification-error" role="alert">{notificationError}</div>}
           {loading ? <div className="notification-empty">Loading notifications…</div> : notifications.length ? notifications.map((notification) => (
-            <button className={`notification-item ${notification.readAt ? "read" : "unread"}`} key={notification._id} disabled={readingId === notification._id} onClick={() => markRead(notification)}>
-              <strong>{notification.title}</strong>
-              <span>{notification.message}</span>
-              <small>{new Date(notification.createdAt).toLocaleString()}</small>
-            </button>
+            <div className={`notification-item ${notification.readAt ? "read" : "unread"}`} key={notification._id}>
+              <button className="notification-link" disabled={readingId === notification._id} onClick={() => openNotification(notification)}>
+                <span className="notification-title">{!notification.readAt && <i aria-label="Unread" />}{notification.title}</span>
+                <span>{notification.message}</span>
+                <time dateTime={notification.createdAt} title={new Date(notification.createdAt).toLocaleString()}>{new Date(notification.createdAt).toLocaleString()}</time>
+              </button>
+              <button className="notification-read-toggle" disabled={readingId === notification._id} onClick={() => notification.readAt ? markUnread(notification) : markRead(notification)}>{notification.readAt ? "Mark unread" : "Mark read"}</button>
+            </div>
           )) : <div className="notification-empty">No notifications yet.</div>}
         </div>
       )}
@@ -1388,7 +1486,10 @@ function PanelHeading({ title, subtitle, children }) {
 
 function ResourceTable({
   page,
+  initialRecordId,
   records,
+  totalRecords,
+  onQueryChange,
   isLoading,
   searchText,
   onSearch,
@@ -1401,47 +1502,51 @@ function ResourceTable({
   userId,
   userRole,
   technicians,
-  roomOptions,
   canInspectRoom,
   onInspectRoom,
   onAssignComplaint,
   onUpdateWork,
   onVerifyRepair,
 }) {
-  const [filters, setFilters] = useState({ room: "", priority: "", status: "", assignee: "", bookingStatus: "", building: "", operational: "" });
+  const [filters, setFilters] = useState({ roomSearch: "", priority: "", status: "", assignee: "", building: "", operational: "", type: "", available: "", date: "" });
   const [sort, setSort] = useState({ column: "", direction: "asc" });
   const [currentPage, setCurrentPage] = useState(1);
+  const [recordId, setRecordId] = useState(initialRecordId || "");
   const pageSize = 10;
-  const matchingRecords = records.filter((record) =>
-    JSON.stringify(record).toLowerCase().includes(searchText.toLowerCase()),
-  );
-  const complaintFilteredRecords = page === "Complaints" ? matchingRecords.filter((record) =>
-    (!filters.room || String(record.room?._id || "") === filters.room) &&
-    (!filters.priority || record.priority === filters.priority) &&
-    (!filters.status || record.status === filters.status) &&
-    (!filters.assignee || (filters.assignee === "unassigned" ? !record.assignedTo : String(record.assignedTo?._id || "") === filters.assignee)),
-  ) : matchingRecords;
-  const filteredRecords = page === "Room bookings"
-    ? complaintFilteredRecords.filter((record) => !filters.bookingStatus || record.status === filters.bookingStatus)
-    : page === "Classrooms"
-      ? complaintFilteredRecords.filter((record) => (!filters.building || record.building === filters.building) && (!filters.operational || record.operationalStatus === filters.operational))
-      : complaintFilteredRecords;
-  const sortedRecords = [...filteredRecords].sort((left, right) => {
-    if (!sort.column) return 0;
-    const a = getTableSortValue(page, sort.column, left);
-    const b = getTableSortValue(page, sort.column, right);
-    const comparison = typeof a === "number" && typeof b === "number"
-      ? a - b
-      : String(a ?? "").localeCompare(String(b ?? ""), undefined, { numeric: true, sensitivity: "base" });
-    return sort.direction === "asc" ? comparison : -comparison;
-  });
-  const pageCount = Math.max(1, Math.ceil(sortedRecords.length / pageSize));
-  const pageRecords = sortedRecords.slice((currentPage - 1) * pageSize, currentPage * pageSize);
+  const pageCount = Math.max(1, Math.ceil(totalRecords / pageSize));
 
-  useEffect(() => { setCurrentPage(1); }, [page, searchText, filters.room, filters.priority, filters.status, filters.assignee, filters.bookingStatus, filters.building, filters.operational]);
+  useEffect(() => { setCurrentPage(1); }, [page, searchText, filters]);
   useEffect(() => { if (currentPage > pageCount) setCurrentPage(pageCount); }, [currentPage, pageCount]);
+  useEffect(() => {
+    if (searchText.trim() || sort.column || Object.values(filters).some(Boolean)) setRecordId("");
+  }, [searchText, sort, filters]);
+  useEffect(() => {
+    const timer = setTimeout(() => {
+      const query = { page: currentPage, limit: pageSize };
+      if (recordId) query.recordId = recordId;
+      if (searchText.trim()) query.search = searchText.trim();
+      if (sort.column) {
+        const sortFields = getServerSortFields(page);
+        if (sortFields[sort.column]) {
+          query.sort = sortFields[sort.column];
+          query.direction = sort.direction;
+        }
+      }
+      const filterFields = page === "Complaints"
+        ? { roomSearch: "roomSearch", priority: "priority", status: "status", assignee: "assignee" }
+        : page === "Room bookings"
+          ? { status: "status", date: "date", roomSearch: "roomSearch" }
+          : page === "Classrooms"
+            ? { building: "building", operational: "operational", type: "type", available: "available" }
+            : {};
+      Object.entries(filterFields).forEach(([key, param]) => { if (filters[key]) query[param] = filters[key]; });
+      onQueryChange(query);
+    }, searchText.trim() ? 250 : 0);
+    return () => clearTimeout(timer);
+  }, [page, currentPage, recordId, searchText, sort, filters, onQueryChange]);
 
   function toggleSort(column) {
+    setCurrentPage(1);
     setSort((current) => ({
       column,
       direction: current.column === column && current.direction === "asc" ? "desc" : "asc",
@@ -1450,14 +1555,11 @@ function ResourceTable({
 
   return (
     <div className="panel tablepanel">
-      <PanelHeading title={page === "Complaints" ? "Central Maintenance Notice Board" : page} subtitle={`${filteredRecords.length} records`}>
+      <PanelHeading title={page === "Complaints" ? "Central Maintenance Notice Board" : page} subtitle={`${totalRecords} records`}>
         <div className="resource-filters">
           <div className="filter"><Search size={16} /><input placeholder={`Filter ${page.toLowerCase()}`} value={searchText} onChange={(event) => onSearch(event.target.value)} /></div>
           {page === "Complaints" && <div className="maintenance-filters">
-            <select aria-label="Filter by room" value={filters.room} onChange={(event) => setFilters((value) => ({ ...value, room: event.target.value }))}>
-              <option value="">All rooms</option>
-              {roomOptions.map((room) => <option key={room._id} value={room._id}>{room.name} · {room.building}</option>)}
-            </select>
+            <input aria-label="Filter by room or building" placeholder="Room or building" value={filters.roomSearch} onChange={(event) => setFilters((value) => ({ ...value, roomSearch: event.target.value }))} />
             <select aria-label="Filter by priority" value={filters.priority} onChange={(event) => setFilters((value) => ({ ...value, priority: event.target.value }))}>
               <option value="">All priorities</option>{["Low", "Normal", "High", "Urgent"].map((priority) => <option key={priority}>{priority}</option>)}
             </select>
@@ -1468,12 +1570,14 @@ function ResourceTable({
               <option value="">All assignees</option><option value="unassigned">Unassigned</option>{technicians.map((technician) => <option key={technician.id} value={technician.id}>{technician.name}</option>)}
             </select>}
           </div>}
-          {page === "Room bookings" && <select aria-label="Filter bookings by status" value={filters.bookingStatus} onChange={(event) => setFilters((value) => ({ ...value, bookingStatus: event.target.value }))}>
+          {page === "Room bookings" && <div className="maintenance-filters"><select aria-label="Filter bookings by status" value={filters.status} onChange={(event) => setFilters((value) => ({ ...value, status: event.target.value }))}>
             <option value="">All statuses</option>{["Pending", "Approved", "Rejected", "Cancelled"].map((status) => <option key={status}>{status}</option>)}
-          </select>}
+          </select><input aria-label="Filter bookings by date" type="date" value={filters.date} onChange={(event) => setFilters((value) => ({ ...value, date: event.target.value }))} /><input aria-label="Filter bookings by room or building" placeholder="Room or building" value={filters.roomSearch} onChange={(event) => setFilters((value) => ({ ...value, roomSearch: event.target.value }))} /></div>}
           {page === "Classrooms" && <div className="maintenance-filters">
-            <select aria-label="Filter rooms by building" value={filters.building} onChange={(event) => setFilters((value) => ({ ...value, building: event.target.value }))}><option value="">All buildings</option>{[...new Set(records.map((room) => room.building).filter(Boolean))].sort().map((building) => <option key={building}>{building}</option>)}</select>
+            <input aria-label="Filter rooms by building" placeholder="Building" value={filters.building} onChange={(event) => setFilters((value) => ({ ...value, building: event.target.value }))} />
             <select aria-label="Filter rooms by inspection status" value={filters.operational} onChange={(event) => setFilters((value) => ({ ...value, operational: event.target.value }))}><option value="">All inspection statuses</option>{["Operational", "Maintenance required", "Not inspected"].map((status) => <option key={status}>{status}</option>)}</select>
+            <select aria-label="Filter rooms by type" value={filters.type} onChange={(event) => setFilters((value) => ({ ...value, type: event.target.value }))}><option value="">All room types</option>{["Lecture Hall", "Laboratory", "Seminar Room", "Meeting Room", "Other"].map((type) => <option key={type}>{type}</option>)}</select>
+            <select aria-label="Filter rooms by availability" value={filters.available} onChange={(event) => setFilters((value) => ({ ...value, available: event.target.value }))}><option value="">Any availability</option><option value="true">Available</option><option value="false">Unavailable</option></select>
           </div>}
         </div>
       </PanelHeading>
@@ -1482,7 +1586,7 @@ function ResourceTable({
         <table>
           <TableHeader page={page} sort={sort} onSort={toggleSort} />
           <tbody>
-            {pageRecords.map((record, index) => (
+            {records.map((record, index) => (
               <ResourceRow
                 key={record._id || index}
                 page={page}
@@ -1496,7 +1600,6 @@ function ResourceTable({
                 userId={userId}
                 userRole={userRole}
                 technicians={technicians}
-                roomOptions={roomOptions}
                 canInspectRoom={canInspectRoom}
                 onInspectRoom={onInspectRoom}
                 onAssignComplaint={onAssignComplaint}
@@ -1512,16 +1615,16 @@ function ResourceTable({
             {Array.from({ length: 5 }, (_, index) => <div className="table-skeleton-row" key={index}><i /><i /><i /><i /></div>)}
           </div>
         ) : (
-          filteredRecords.length === 0 && (
+          records.length === 0 && (
             <div className="empty">
               <AlertCircle size={20} />
-              <span>{records.length === 0 ? "No records yet." : "No records match these filters."}</span>
+              <span>{totalRecords === 0 ? "No records found for these filters." : "No records on this page."}</span>
             </div>
           )
         )}
       </div>
-      {!isLoading && filteredRecords.length > 0 && <div className="table-pagination">
-        <span>Showing {(currentPage - 1) * pageSize + 1}–{Math.min(currentPage * pageSize, sortedRecords.length)} of {sortedRecords.length}</span>
+      {!isLoading && totalRecords > 0 && <div className="table-pagination">
+        <span>Showing {(currentPage - 1) * pageSize + 1}–{Math.min(currentPage * pageSize, totalRecords)} of {totalRecords}</span>
         <div><button className="secondary" disabled={currentPage === 1} onClick={() => setCurrentPage((value) => Math.max(1, value - 1))}>Previous</button><span>Page {currentPage} of {pageCount}</span><button className="secondary" disabled={currentPage >= pageCount} onClick={() => setCurrentPage((value) => Math.min(pageCount, value + 1))}>Next</button></div>
       </div>}
     </div>
@@ -1550,6 +1653,22 @@ function getTableSortValue(page, column, record) {
     Attendance: { Student: record.student?.name, Date: record.date, Status: record.status },
   };
   return values[page]?.[column] ?? record[column.toLowerCase()];
+}
+
+function getServerSortFields(page) {
+  const fields = {
+    "Activity history": { Actor: "createdAt", Record: "entityType", Action: "action", Date: "createdAt" },
+    Students: { Student: "name", "Student ID": "studentId", Department: "department", Email: "email" },
+    Faculty: { Faculty: "name", Department: "department", Email: "email" },
+    Technicians: { Technician: "name", Created: "createdAt" },
+    Classes: { Course: "courseName", "Code / section": "courseCode", Schedule: "day" },
+    Attendance: { Date: "date", Status: "status" },
+    Classrooms: { "Room number": "name", Building: "building", Floor: "floor", Type: "type", Capacity: "capacity", Availability: "available" },
+    "Room bookings": { Date: "date", Time: "startTime", Purpose: "purpose", Status: "status" },
+    Notices: { Notice: "title", Category: "category", Published: "createdAt" },
+    Complaints: { Issue: "title", Priority: "priority", Status: "status", "Date / history": "createdAt" },
+  };
+  return fields[page] || {};
 }
 
 function MaintenanceRow({ record, userRole, canEdit, technicians, onResolve, onAssign, onUpdateWork, onVerify }) {
@@ -1711,6 +1830,7 @@ function RoomInspectionModal({ room, token, onClose, onSaved }) {
 }
 
 function TableHeader({ page, sort, onSort }) {
+  const sortableFields = getServerSortFields(page);
   const columnSets = {
     "Activity history": ["Actor", "Record", "Action", "Details", "Date"],
     Students: [
@@ -1760,7 +1880,7 @@ function TableHeader({ page, sort, onSort }) {
     <thead>
       <tr>
         {columnSets[page].map((column) => (
-          <th key={column} aria-sort={sort.column === column ? (sort.direction === "asc" ? "ascending" : "descending") : "none"}><button className="sort-heading" aria-label={`Sort by ${column}`} onClick={() => onSort(column)}>{column}{sort.column === column ? (sort.direction === "asc" ? " ↑" : " ↓") : ""}</button></th>
+          <th key={column} aria-sort={sort.column === column ? (sort.direction === "asc" ? "ascending" : "descending") : "none"}><button className="sort-heading" aria-label={`Sort by ${column}`} disabled={!sortableFields[column]} onClick={() => onSort(column)}>{column}{sort.column === column ? (sort.direction === "asc" ? " ↑" : " ↓") : ""}</button></th>
         ))}
       </tr>
     </thead>
@@ -1768,12 +1888,12 @@ function TableHeader({ page, sort, onSort }) {
 }
 
 function ResourceRow({ page, record, canEdit, onEdit, onDelete, onResolve, onBookingDecision, onBookingCancel, userId, userRole, technicians, canInspectRoom, onInspectRoom, onAssignComplaint, onUpdateWork, onVerifyRepair }) {
-  const [actionBusy, setActionBusy] = useState(false);
-  async function runBookingAction(action) {
+  const [actionBusy, setActionBusy] = useState("");
+  async function runBookingAction(action, actionName) {
     if (actionBusy) return;
-    setActionBusy(true);
+    setActionBusy(actionName);
     try { await action(); }
-    finally { setActionBusy(false); }
+    finally { setActionBusy(""); }
   }
   if (page === "Activity history") {
     return <tr><td><strong>{record.actor?.name || "CampusOS"}</strong><small>{record.actor?.role || "System"}</small></td><td><span className="entity-chip">{record.entityType}</span></td><td>{record.action}</td><td>{record.summary}</td><td>{new Date(record.createdAt).toLocaleString()}</td></tr>;
@@ -1940,20 +2060,20 @@ function ResourceRow({ page, record, canEdit, onEdit, onDelete, onResolve, onBoo
         <td>
           {canEdit && record.status === "Pending" && (
             <>
-              <button className="table-action" disabled={actionBusy} onClick={() => runBookingAction(() => onBookingDecision(record, "Approved"))}>
-                {actionBusy ? "Saving…" : "Approve"}
+              <button className="table-action" disabled={Boolean(actionBusy)} onClick={() => runBookingAction(() => onBookingDecision(record, "Approved"), "approve")}>
+                {actionBusy === "approve" ? "Approving…" : "Approve"}
               </button>
               <button
                 className="table-action danger"
-                disabled={actionBusy}
-                onClick={() => runBookingAction(() => onBookingDecision(record, "Rejected"))}
+                disabled={Boolean(actionBusy)}
+                onClick={() => runBookingAction(() => onBookingDecision(record, "Rejected"), "reject")}
               >
-                Reject
+                {actionBusy === "reject" ? "Rejecting…" : "Reject"}
               </button>
             </>
           )}
           {String(record.bookedBy?._id) === String(userId) && ["Pending", "Approved"].includes(record.status) && (
-            <button className="table-action danger" disabled={actionBusy} onClick={() => runBookingAction(() => onBookingCancel(record))}>{actionBusy ? "Saving…" : "Cancel"}</button>
+            <button className="table-action danger" disabled={Boolean(actionBusy)} onClick={() => runBookingAction(() => onBookingCancel(record), "cancel")}>{actionBusy === "cancel" ? "Cancelling…" : "Cancel"}</button>
           )}
         </td>
       </tr>

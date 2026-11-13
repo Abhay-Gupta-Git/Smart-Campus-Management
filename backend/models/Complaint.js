@@ -20,10 +20,10 @@ const complaintSchema = new mongoose.Schema(
       enum: ["Open", "In progress", "Pending Verification", "Resolved", "Closed"],
       default: "Open" ,
     },
-    room: { type: mongoose.Schema.Types.ObjectId, ref: "Room", default: null, index: true },
+    room: { type: mongoose.Schema.Types.ObjectId, ref: "Room", default: null },
     equipment: { type: String, enum: ["Fan", "AC", "Projector", "Light", null], default: null },
     priority: { type: String, enum: ["Low", "Normal", "High", "Urgent"], default: "Normal", index: true },
-    assignedTo: { type: mongoose.Schema.Types.ObjectId, ref: "User", default: null, index: true },
+    assignedTo: { type: mongoose.Schema.Types.ObjectId, ref: "User", default: null },
     resolutionDetails: { type: String, trim: true, maxlength: 3000, default: "" },
     resolutionEvidence: [{ type: String, maxlength: 1000 }],
     verifiedBy: { type: mongoose.Schema.Types.ObjectId, ref: "User", default: null },
@@ -43,5 +43,7 @@ complaintSchema.index({ createdAt: -1 });
 complaintSchema.index({ submittedBy: 1, createdAt: -1 });
 complaintSchema.index({ room: 1, status: 1, createdAt: -1 });
 complaintSchema.index({ assignedTo: 1, status: 1, createdAt: -1 });
+complaintSchema.index({ verifiedBy: 1 });
+complaintSchema.index({ "history.actor": 1 });
 
 module.exports = mongoose.model("Complaint", complaintSchema);

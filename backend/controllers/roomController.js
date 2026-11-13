@@ -2,7 +2,11 @@ const mongoose = require("mongoose");
 const Room = require("../models/Room");
 const recordActivity = require("../utils/activityLog");
 const { hasOnlyFields } = require("../utils/validation");
-const { readPagination, executeListQuery } = require("../utils/pagination");
+const { readPagination, readSearch, readSort, escapeRegex, executeListQuery } = require("../utils/pagination");
+const CampusClass = require("../models/CampusClass");
+const Booking = require("../models/Booking");
+const Complaint = require("../models/Complaint");
+const { runTransaction, isTransactionUnsupported } = require("../utils/transactions");
 
 const allowedFields = ["name", "building", "floor", "capacity", "type", "available", "facilities"];
 
@@ -17,6 +21,7 @@ function invalidId(id) {
 }
 
 function sendRoomError(res, error) {
+  if (isTransactionUnsupported(error)) return res.status(503).json({ message: "Room deletion requires MongoDB transaction support. Configure MongoDB as a replica set and retry." });
   if (error.code === 11000) {
     return res.status(409).json({ message: "A room with this number already exists in this building." });
   }
@@ -30,9 +35,55 @@ function sendRoomError(res, error) {
 async function listRooms(req, res) {
   try {
     const filter = {};
+    const clauses = [];
     const pagination = readPagination(req, res);
     if (pagination === false) return;
-    const rooms = await executeListQuery({ query: Room.find(filter).sort("building name"), Model: Room, filter, pagination, res });
+    const search = readSearch(req, res);
+    if (search === false) return;
+    const sort = readSort(req, res, ["name", "building", "floor", "capacity", "type", "available", "createdAt"], "building");
+    if (sort === false) return;
+    if (req.query.recordId !== undefined) {
+      if (!invalidId(req.query.recordId)) filter._id = req.query.recordId;
+      else return res.status(400).json({ message: "Record filter is invalid." });
+    }
+    if (search) clauses.push({ $or: ["name", "building", "facilities"].map((field) => ({
+      [field]: { $regex: escapeRegex(search), $options: "i" },
+    })) });
+    if (req.query.building !== undefined) {
+      if (typeof req.query.building !== "string" || req.query.building.trim().length > 80) return res.status(400).json({ message: "Building filter must be 80 characters or fewer." });
+      if (req.query.building.trim()) filter.building = { $regex: escapeRegex(req.query.building.trim()), $options: "i" };
+    }
+    if (req.query.type !== undefined) {
+      const validTypes = ["Classroom", "Lecture Hall", "Laboratory", "Meeting Room", "Auditorium", "Other"];
+      if (!validTypes.includes(req.query.type)) return res.status(400).json({ message: "Room type filter is invalid." });
+      filter.type = req.query.type;
+    }
+    if (req.query.available !== undefined) {
+      if (!["true", "false"].includes(req.query.available)) return res.status(400).json({ message: "Availability filter must be true or false." });
+      filter.available = req.query.available === "true";
+    }
+    if (req.query.operational !== undefined) {
+      const equipment = ["Fan", "AC", "Projector", "Light"];
+      const faultFilter = { equipment: { $elemMatch: { status: { $in: ["Not Working", "Needs Maintenance"] } } } };
+      if (req.query.operational === "Operational") {
+        clauses.push({ $and: [
+          { maintenanceHold: { $ne: true } },
+          ...equipment.map((type) => ({ equipment: { $elemMatch: { type, status: "Working" } } })),
+        ] });
+      } else if (req.query.operational === "Maintenance required") {
+        clauses.push({ $or: [{ maintenanceHold: true }, faultFilter] });
+      } else if (req.query.operational === "Not inspected") {
+        clauses.push({ $and: [
+          { maintenanceHold: { $ne: true } },
+          { $nor: [faultFilter] },
+          { $or: equipment.map((type) => ({ equipment: { $not: { $elemMatch: { type } } } })) },
+        ] });
+      } else return res.status(400).json({ message: "Inspection status filter is invalid." });
+    }
+    if (clauses.length) filter.$and = [...(filter.$and || []), ...clauses];
+    const rooms = await executeListQuery({ query: Room.find(filter)
+      .select("name building floor capacity type facilities equipment maintenanceHold available createdAt updatedAt")
+      .sort(sort), Model: Room, filter, pagination, res });
     return res.json(rooms);
   } catch (error) {
     return sendRoomError(res, error);
@@ -125,8 +176,32 @@ async function updateRoom(req, res) {
 async function deleteRoom(req, res) {
   if (invalidId(req.params.id)) return res.status(400).json({ message: "Invalid room ID" });
   try {
-    const room = await Room.findByIdAndDelete(req.params.id);
-    if (!room) return res.status(404).json({ message: "Room not found" });
+    const result = await runTransaction(async (session) => {
+      const room = await Room.findById(req.params.id).select("+inspectionHistory").session(session);
+      if (!room) return { status: 404, message: "Room not found" };
+
+      const lock = await Room.updateOne(
+        { _id: room._id },
+        { $inc: { referenceVersion: 1 } },
+        { session },
+      );
+      if (!lock.matchedCount) return { status: 404, message: "Room not found" };
+
+      const classes = await CampusClass.countDocuments({ room: room._id }).session(session);
+      const bookings = await Booking.countDocuments({ room: room._id }).session(session);
+      const maintenanceComplaints = await Complaint.countDocuments({ room: room._id }).session(session);
+      const inspections = room.inspectionHistory.length || Number(room.equipment.some((item) => item.inspectedAt || item.inspectedBy));
+      const references = { classes, bookings, inspections, maintenanceComplaints };
+      if (Object.values(references).some(Boolean)) {
+        return { status: 409, message: "Room cannot be deleted while classes, bookings, inspections, or maintenance complaints reference it.", references };
+      }
+
+      await Room.deleteOne({ _id: room._id }, { session });
+      return { status: 200, room };
+    });
+
+    if (result.status !== 200) return res.status(result.status).json({ message: result.message, ...(result.references ? { references: result.references } : {}) });
+    const room = result.room;
     await recordActivity({ actor: req.user.id, action: "Room deleted", entityType: "room", entityId: room._id, summary: `Deleted ${room.name} in ${room.building}.` });
     return res.json({ message: "Room removed" });
   } catch (error) {

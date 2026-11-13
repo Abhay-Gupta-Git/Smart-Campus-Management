@@ -1,9 +1,11 @@
 const express = require("express");
+const mongoose = require("mongoose");
 const Notice = require("../models/Notice");
 const { protect, authorizeRoles } = require("../middleware/authMiddleware");
 const { hasOnlyFields } = require("../utils/validation");
-const { readPagination, executeListQuery } = require("../utils/pagination");
+const { readPagination, readSearch, readSort, escapeRegex, executeListQuery } = require("../utils/pagination");
 const respondError = require("../utils/respondError");
+const recordActivity = require("../utils/activityLog");
 
 const router = express.Router();
 
@@ -11,15 +13,30 @@ router.use(protect);
 
 router.get("/", async (req, res) => {
   try {
-    const filter =
+    const baseFilter =
       req.user.role === "admin"
         ? {}
         : { $or: [{ audience: "all" }, { audience: req.user.role }] };
+    if (req.query.recordId !== undefined) {
+      if (!mongoose.isValidObjectId(req.query.recordId)) return res.status(400).json({ message: "Record filter is invalid." });
+    }
     const pagination = readPagination(req, res);
     if (pagination === false) return;
+    const search = readSearch(req, res);
+    if (search === false) return;
+    let filter = req.query.recordId !== undefined
+      ? { $and: [baseFilter, { _id: req.query.recordId }] }
+      : baseFilter;
+    if (search) {
+      const regex = { $regex: escapeRegex(search), $options: "i" };
+      const searchFilter = { $or: ["title", "body", "category"].map((field) => ({ [field]: regex })) };
+      filter = Object.keys(baseFilter).length ? { $and: [baseFilter, searchFilter] } : searchFilter;
+    }
+    const sort = readSort(req, res, ["createdAt", "title", "category"], "createdAt", "desc");
+    if (sort === false) return;
     const notices = await executeListQuery({ query: Notice.find(filter)
       .populate("author", "name")
-      .sort("-createdAt")
+      .sort(sort)
       .lean(), Model: Notice, filter, pagination, res });
 
     return res.json(notices);
@@ -56,6 +73,8 @@ router.post("/", authorizeRoles("admin", "faculty"), async (req, res) => {
       author: req.user.id,
     });
 
+    await recordActivity({ actor: req.user.id, action: "Notice published", entityType: "notice", entityId: notice._id, summary: `Published notice: ${notice.title}.` });
+
     return res.status(201).json(notice);
   } catch (error) {
     return respondError(res, error, "Notice creation", "Unable to publish notice.");
@@ -69,6 +88,8 @@ router.delete("/:id", authorizeRoles("admin"), async (req, res) => {
     if (!notice) {
       return res.status(404).json({ message: "Notice not found" });
     }
+
+    await recordActivity({ actor: req.user.id, action: "Notice deleted", entityType: "notice", entityId: notice._id, summary: `Deleted notice: ${notice.title}.` });
 
     return res.json({ message: "Notice removed" });
   } catch (error) {

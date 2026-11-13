@@ -32,6 +32,7 @@ const campusClassSchema = new mongoose.Schema(
     endTime: { type: String, required: true },
     maxEnrollment: { type: Number, default: 60, min: 1 },
     enrolledStudents: [{ type: mongoose.Schema.Types.ObjectId, ref: "User" }],
+    referenceVersion: { type: Number, default: 0, select: false },
   },
   { timestamps: true },
 );
@@ -40,5 +41,6 @@ campusClassSchema.index({ courseCode: 1, section: 1 }, { unique: true });
 campusClassSchema.index({ faculty: 1, day: 1, startTime: 1 });
 campusClassSchema.index({ enrolledStudents: 1, day: 1, startTime: 1 });
 campusClassSchema.index({ day: 1, room: 1, startTime: 1, endTime: 1 });
+campusClassSchema.index({ room: 1 });
 
 module.exports = mongoose.model("CampusClass", campusClassSchema);
