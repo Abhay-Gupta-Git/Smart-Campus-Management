@@ -3,6 +3,7 @@ const Complaint = require("../models/Complaint");
 const Notification = require("../models/Notification");
 const Room = require("../models/Room");
 const User = require("../models/User");
+const recordActivity = require("../utils/activityLog");
 
 const equipmentTypes = ["Fan", "AC", "Projector", "Light"];
 const priorities = ["Low", "Normal", "High", "Urgent"];
@@ -105,6 +106,7 @@ async function createComplaint(req, res) {
       submittedBy: req.user.id,
       history: [{ actor: req.user.id, action: body.room ? "Facility issue reported" : "Complaint submitted", note: body.description.trim() }],
     });
+    await recordActivity({ actor: req.user.id, action: "Complaint submitted", entityType: "complaint", entityId: complaint._id, summary: `Submitted: ${complaint.title}` });
     if (complaint.room) {
       const room = await Room.findById(complaint.room);
       if (room) {
@@ -159,6 +161,7 @@ async function assignComplaint(req, res) {
     complaint.verificationNote = "";
     complaint.history.push({ actor: req.user.id, action: technician ? "Assigned to technician" : "Technician assignment cleared", note: note.trim(), fromStatus: oldStatus, toStatus: complaint.status });
     await complaint.save();
+    await recordActivity({ actor: req.user.id, action: technician ? "Complaint assigned" : "Complaint unassigned", entityType: "complaint", entityId: complaint._id, summary: `${complaint.title}${technician ? ` assigned to ${technician.name}` : " assignment cleared"}.` });
     const label = await getRoomLabel(complaint.room);
     await notifyUsers([complaint.submittedBy, previousAssignee, technician?._id], complaint, technician ? "Maintenance issue assigned" : "Maintenance assignment updated", `${complaint.equipment} issue for ${label} is ${technician ? `assigned to ${technician.name}` : "unassigned"}.`);
     return res.json(await populatedComplaints(Complaint.findById(complaint._id)));
@@ -199,6 +202,7 @@ async function updateWork(req, res) {
       evidence,
     });
     await complaint.save();
+    await recordActivity({ actor: req.user.id, action: status === "Pending Verification" ? "Repair submitted for verification" : "Maintenance progress updated", entityType: "complaint", entityId: complaint._id, summary: `${complaint.title} moved to ${status}.` });
     const label = await getRoomLabel(complaint.room);
     await notifyUsers([complaint.submittedBy, req.user.id], complaint, status === "Pending Verification" ? "Repair ready for verification" : "Maintenance work updated", `${complaint.equipment} issue for ${label}: ${status === "Pending Verification" ? "repair submitted for faculty verification" : "work progress updated"}.`);
     await notifyRole("admin", complaint, "Maintenance work updated", `${complaint.equipment} issue for ${label} is now ${status}.`);
@@ -234,6 +238,7 @@ async function verifyRepair(req, res) {
       toStatus: complaint.status,
     });
     await complaint.save();
+    await recordActivity({ actor: req.user.id, action: decision === "accept" ? "Repair accepted" : "Repair rejected", entityType: "complaint", entityId: complaint._id, summary: `${complaint.title} was ${decision === "accept" ? "accepted and closed" : "returned for more work"}.` });
     const label = await getRoomLabel(complaint.room);
     if (decision === "accept") await refreshRoomMaintenance(complaint);
     const recipients = [complaint.assignedTo, complaint.submittedBy];
@@ -289,6 +294,7 @@ async function updateGenericComplaint(req, res) {
     complaint.status = status;
     complaint.history.push({ actor: req.user.id, action: "Complaint status updated", fromStatus: oldStatus, toStatus: status });
     await complaint.save();
+    await recordActivity({ actor: req.user.id, action: "Complaint status updated", entityType: "complaint", entityId: complaint._id, summary: `${complaint.title} moved to ${status}.` });
     await notifyUsers([complaint.submittedBy], complaint, "Complaint updated", `Your complaint status changed to ${status}.`);
     return res.json(await populatedComplaints(Complaint.findById(complaint._id)));
   } catch (error) {

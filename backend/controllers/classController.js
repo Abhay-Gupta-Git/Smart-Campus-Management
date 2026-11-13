@@ -2,6 +2,7 @@ const mongoose = require("mongoose");
 const CampusClass = require("../models/CampusClass");
 const Room = require("../models/Room");
 const User = require("../models/User");
+const recordActivity = require("../utils/activityLog");
 
 const validDays = [
   "Monday",
@@ -143,6 +144,8 @@ async function createClass(req, res) {
     const populatedClass = await classPopulation(
       CampusClass.findById(campusClass._id),
     );
+    const assignedRoom = await Room.findById(campusClass.room).select("name building").lean();
+    await recordActivity({ actor: req.user.id, action: "Classroom allocation created", entityType: "class", entityId: campusClass._id, summary: `${campusClass.courseName} assigned to ${assignedRoom?.name || "a room"}${assignedRoom?.building ? ` in ${assignedRoom.building}` : ""} on ${campusClass.day}.` });
 
     return res.status(201).json(populatedClass);
   } catch (error) {
@@ -176,6 +179,7 @@ async function updateClass(req, res) {
       });
     }
 
+    const existingClass = await CampusClass.findById(req.params.id).select("room courseName");
     const campusClass = await CampusClass.findByIdAndUpdate(
       req.params.id,
       {
@@ -189,6 +193,12 @@ async function updateClass(req, res) {
     if (!campusClass) {
       return res.status(404).json({ message: "Class not found" });
     }
+
+    const [oldRoom, newRoom] = await Promise.all([
+      existingClass?.room ? Room.findById(existingClass.room).select("name building").lean() : null,
+      Room.findById(campusClass.room).select("name building").lean(),
+    ]);
+    await recordActivity({ actor: req.user.id, action: "Classroom allocation updated", entityType: "class", entityId: campusClass._id, summary: `${campusClass.courseName} room allocation changed from ${oldRoom?.name || "unassigned"} to ${newRoom?.name || "a room"}.` });
 
     return res.json(
       await classPopulation(CampusClass.findById(campusClass._id)),
@@ -211,6 +221,9 @@ async function deleteClass(req, res) {
     if (!campusClass) {
       return res.status(404).json({ message: "Class not found" });
     }
+
+    const removedRoom = await Room.findById(campusClass.room).select("name building").lean();
+    await recordActivity({ actor: req.user.id, action: "Classroom allocation removed", entityType: "class", entityId: campusClass._id, summary: `${campusClass.courseName} allocation in ${removedRoom?.name || "a room"} was removed.` });
 
     return res.json({ message: "Class deleted" });
   } catch (error) {

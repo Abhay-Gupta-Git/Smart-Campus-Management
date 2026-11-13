@@ -1,5 +1,6 @@
 const mongoose = require("mongoose");
 const Room = require("../models/Room");
+const recordActivity = require("../utils/activityLog");
 
 const allowedFields = ["name", "building", "floor", "capacity", "type", "available", "facilities"];
 
@@ -70,6 +71,7 @@ async function inspectRoom(req, res) {
     room.inspectionHistory.push({ equipment: inspectedEquipment, recordedAt: inspectedAt });
     room.equipment = inspectedEquipment;
     await room.save();
+    await recordActivity({ actor: req.user.id, action: "Room inspected", entityType: "room", entityId: room._id, summary: `Facility inspection recorded for ${room.name} in ${room.building}.` });
     return res.json(room);
   } catch (error) {
     if (error.name === "ValidationError") return res.status(400).json({ message: error.message });
@@ -85,6 +87,7 @@ async function createRoom(req, res) {
       .collation({ locale: "en", strength: 2 });
     if (duplicate) return res.status(409).json({ message: "A room with this number already exists in this building." });
     const room = await Room.create(payload);
+    await recordActivity({ actor: req.user.id, action: "Room created", entityType: "room", entityId: room._id, summary: `Created ${room.name} in ${room.building}.` });
     return res.status(201).json(room);
   } catch (error) {
     return sendRoomError(res, error);
@@ -105,6 +108,7 @@ async function updateRoom(req, res) {
     if (duplicate) return res.status(409).json({ message: "A room with this number already exists in this building." });
     Object.assign(room, payload);
     await room.save();
+    await recordActivity({ actor: req.user.id, action: "Room updated", entityType: "room", entityId: room._id, summary: `Updated ${room.name} in ${room.building}.` });
     return res.json(room);
   } catch (error) {
     return sendRoomError(res, error);
@@ -116,6 +120,7 @@ async function deleteRoom(req, res) {
   try {
     const room = await Room.findByIdAndDelete(req.params.id);
     if (!room) return res.status(404).json({ message: "Room not found" });
+    await recordActivity({ actor: req.user.id, action: "Room deleted", entityType: "room", entityId: room._id, summary: `Deleted ${room.name} in ${room.building}.` });
     return res.json({ message: "Room removed" });
   } catch (error) {
     return sendRoomError(res, error);

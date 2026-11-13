@@ -1,6 +1,18 @@
 const mongoose = require("mongoose");
 const Booking = require("../models/Booking");
 const Room = require("../models/Room");
+const Notification = require("../models/Notification");
+const User = require("../models/User");
+const recordActivity = require("../utils/activityLog");
+
+async function notifyBooking(recipients, title, message) {
+  try {
+    const ids = [...new Set(recipients.filter(Boolean).map((id) => id.toString()))];
+    if (ids.length) await Notification.insertMany(ids.map((recipient) => ({ recipient, title, message })));
+  } catch (error) {
+    console.error("Booking notification failed:", error.message);
+  }
+}
 
 function isValidTime(time) {
   return typeof time === "string" && /^([01]\d|2[0-3]):[0-5]\d$/.test(time);
@@ -69,6 +81,11 @@ async function createBooking(req, res) {
       bookedBy: req.user.id,
       status: "Pending",
     });
+    await recordActivity({ actor: req.user.id, action: "Booking requested", entityType: "booking", entityId: booking._id, summary: `Requested ${room.name} in ${room.building} for ${booking.date}.` });
+    try {
+      const admins = await User.find({ role: "admin" }).select("_id").lean();
+      await notifyBooking(admins.map((admin) => admin._id), "New room booking request", `${room.name} in ${room.building} requested for ${booking.date}, ${booking.startTime}–${booking.endTime}.`);
+    } catch (error) { console.error("Booking notification recipients lookup failed:", error.message); }
     return res.status(201).json({ message: "Booking request submitted for approval.", booking: await populatedBooking(booking._id) });
   } catch (error) {
     return handleError(res, error, "Booking request failed.");
@@ -137,7 +154,10 @@ async function decideBooking(req, res) {
     });
 
     if (result?.code !== 200) return res.status(result?.code || 409).json({ message: result?.message || "Booking decision could not be completed." });
-    return res.json({ message: `Booking ${status.toLowerCase()} successfully.`, booking: await populatedBooking(result.bookingId) });
+    const updatedBooking = await populatedBooking(result.bookingId);
+    await recordActivity({ actor: req.user.id, action: `Booking ${status.toLowerCase()}`, entityType: "booking", entityId: result.bookingId, summary: `${updatedBooking.room?.name || "Room"} booking for ${updatedBooking.date} was ${status.toLowerCase()}.` });
+    await notifyBooking([updatedBooking.bookedBy?._id], `Booking ${status.toLowerCase()}`, `Your request for ${updatedBooking.room?.name || "a room"} on ${updatedBooking.date} was ${status.toLowerCase()}.`);
+    return res.json({ message: `Booking ${status.toLowerCase()} successfully.`, booking: updatedBooking });
   } catch (error) {
     return handleError(res, error, "Failed to update booking decision.");
   } finally {
@@ -155,6 +175,12 @@ async function cancelBooking(req, res) {
     }
     booking.status = "Cancelled";
     await booking.save();
+    const room = await Room.findById(booking.room).select("name building").lean();
+    await recordActivity({ actor: req.user.id, action: "Booking cancelled", entityType: "booking", entityId: booking._id, summary: `${room?.name || "Room"} booking for ${booking.date} was cancelled.` });
+    try {
+      const admins = await User.find({ role: "admin" }).select("_id").lean();
+      await notifyBooking(admins.map((admin) => admin._id), "Room booking cancelled", `${room?.name || "Room"} booking for ${booking.date} was cancelled.`);
+    } catch (error) { console.error("Booking notification recipients lookup failed:", error.message); }
     return res.json({ message: "Booking request cancelled.", booking: await populatedBooking(booking._id) });
   } catch (error) {
     return handleError(res, error, "Failed to cancel booking request.");

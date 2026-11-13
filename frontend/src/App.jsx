@@ -10,6 +10,7 @@ import {
   ClipboardCheck,
   Clock3,
   DoorOpen,
+  History,
   LayoutDashboard,
   LogOut,
   Megaphone,
@@ -26,6 +27,7 @@ const API_URL = import.meta.env.VITE_API_URL || "http://localhost:5000/api";
 
 const navigationItems = [
   ["Overview", LayoutDashboard],
+  ["Activity history", History],
   ["Analytics", BarChart3],
   ["Students", Users],
   ["Faculty", Users],
@@ -49,6 +51,7 @@ const resourceEndpoints = {
   "Room bookings": "/bookings",
   Notices: "/notices",
   Complaints: "/complaints",
+  "Activity history": "/activity",
 };
 
 async function requestApi(path, token, options = {}) {
@@ -78,6 +81,7 @@ function App() {
   );
   const [page, setPage] = useState("Overview");
   const [dashboard, setDashboard] = useState({});
+  const [isDashboardLoading, setIsDashboardLoading] = useState(true);
   const [records, setRecords] = useState([]);
   const [searchText, setSearchText] = useState("");
   const [isModalOpen, setIsModalOpen] = useState(false);
@@ -88,6 +92,9 @@ function App() {
   const [inspectionRoom, setInspectionRoom] = useState(null);
   const [technicians, setTechnicians] = useState([]);
   const [roomOptions, setRoomOptions] = useState([]);
+  const [isSidebarOpen, setIsSidebarOpen] = useState(false);
+  const [pendingDelete, setPendingDelete] = useState(null);
+  const [isDeleting, setIsDeleting] = useState(false);
 
   useEffect(() => {
     if (!token) {
@@ -109,9 +116,17 @@ function App() {
       return;
     }
 
+    let active = true;
+    setIsDashboardLoading(true);
     requestApi("/dashboard", token)
-      .then(setDashboard)
-      .catch((error) => setErrorMessage(error.message));
+      .then((result) => { if (active) setDashboard(result); })
+      .catch((error) => { if (active) setErrorMessage(error.message); })
+      .finally(() => { if (active) setIsDashboardLoading(false); });
+    return () => { active = false; };
+  }, [token]);
+
+  useEffect(() => {
+    if (!token) return;
 
     loadRecords(page);
     if (page === "Complaints") {
@@ -198,6 +213,19 @@ function App() {
     }
   }
 
+  async function confirmDelete() {
+    if (!pendingDelete || isDeleting) return;
+    const record = pendingDelete;
+    setIsDeleting(true);
+    try {
+      await requestApi(`${resourceEndpoints[page]}/${record._id}`, token, { method: "DELETE" });
+      setPendingDelete(null);
+      await loadRecords(page);
+      setSuccessMessage(`${getRecordLabel(page)} deleted successfully.`);
+    } catch (error) { setErrorMessage(error.message); }
+    finally { setIsDeleting(false); }
+  }
+
   if (!token || !sessionReady) {
     if (token && !sessionReady) {
       return <div className="auth">Checking your secure session...</div>;
@@ -215,6 +243,8 @@ function App() {
         user={user}
         onNavigate={setPage}
         onLogout={handleLogout}
+        isOpen={isSidebarOpen}
+        onClose={() => setIsSidebarOpen(false)}
       />
 
       <main className="main">
@@ -224,6 +254,7 @@ function App() {
           token={token}
           searchText={searchText}
           onSearch={setSearchText}
+          onMenu={() => setIsSidebarOpen((open) => !open)}
         />
 
         <section className="content">
@@ -256,7 +287,7 @@ function App() {
           )}
 
           {page === "Overview" ? (
-            <DashboardPage dashboard={dashboard} onNavigate={setPage} />
+            <DashboardPage dashboard={dashboard} isLoading={isDashboardLoading} onNavigate={setPage} />
           ) : page === "Analytics" && user?.role === "admin" ? (
             <AnalyticsDashboardPage token={token} />
           ) : page === "Room recommendations" ? (
@@ -290,31 +321,7 @@ function App() {
                 setEditingRecord(record);
                 setIsModalOpen(true);
               }}
-              onDelete={async (record) => {
-                const itemLabel =
-                  page === "Classes"
-                    ? `${record.courseCode} ${record.section}`
-                    : record.name || record.title || "this record";
-                if (!window.confirm(`Delete ${itemLabel}?`)) {
-                  return;
-                }
-
-                try {
-                  await requestApi(
-                    `${resourceEndpoints[page]}/${record._id}`,
-                    token,
-                    {
-                      method: "DELETE",
-                    },
-                  );
-                  await loadRecords(page);
-                  setSuccessMessage(
-                    `${getRecordLabel(page)} deleted successfully.`,
-                  );
-                } catch (error) {
-                  setErrorMessage(error.message);
-                }
-              }}
+              onDelete={setPendingDelete}
               onResolve={async (record) => {
                 try {
                   await requestApi(`/complaints/${record._id}`, token, {
@@ -395,15 +402,23 @@ function App() {
           onSaved={async () => { setInspectionRoom(null); await loadRecords("Classrooms"); }}
         />
       )}
+      {pendingDelete && <div className="overlay" role="presentation" onMouseDown={(event) => event.target === event.currentTarget && !isDeleting && setPendingDelete(null)}>
+        <section className="modal confirm-modal" role="alertdialog" aria-modal="true" aria-labelledby="delete-title">
+          <div className="modalhead"><h2 id="delete-title">Delete {getRecordLabel(page)}?</h2><button type="button" disabled={isDeleting} onClick={() => setPendingDelete(null)} aria-label="Close confirmation">×</button></div>
+          <p>This will permanently remove <strong>{page === "Classes" ? `${pendingDelete.courseCode} ${pendingDelete.section}` : pendingDelete.name || pendingDelete.title || "this record"}</strong>.</p>
+          <div className="modal-actions"><button className="secondary" disabled={isDeleting} onClick={() => setPendingDelete(null)}>Keep record</button><button className="danger-button" disabled={isDeleting} onClick={confirmDelete}>{isDeleting ? "Deleting…" : "Delete record"}</button></div>
+        </section>
+      </div>}
     </div>
   );
 }
 
-function Sidebar({ activePage, dashboard, user, onNavigate, onLogout }) {
+function Sidebar({ activePage, dashboard, user, onNavigate, onLogout, isOpen, onClose }) {
   const role = user?.role || "student";
   const allowedPages = {
     admin: [
       "Overview",
+      "Activity history",
       "Analytics",
       "Technicians",
       "Students",
@@ -418,6 +433,7 @@ function Sidebar({ activePage, dashboard, user, onNavigate, onLogout }) {
     ],
     faculty: [
       "Overview",
+      "Activity history",
       "Classes",
       "Students",
       "Attendance",
@@ -427,12 +443,14 @@ function Sidebar({ activePage, dashboard, user, onNavigate, onLogout }) {
       "Notices",
       "Complaints",
     ],
-    student: ["Overview", "Classes", "Attendance", "Classrooms", "Room bookings", "Room recommendations", "Notices", "Complaints"],
-    technician: ["Overview", "Classrooms", "Complaints"],
+    student: ["Overview", "Activity history", "Classes", "Attendance", "Classrooms", "Room bookings", "Room recommendations", "Notices", "Complaints"],
+    technician: ["Overview", "Activity history", "Classrooms", "Complaints"],
   }[role] || ["Overview"];
 
   return (
-    <aside className="sidebar">
+    <>
+    {isOpen && <button className="sidebar-scrim" aria-label="Close navigation" onClick={onClose} />}
+    <aside className={`sidebar ${isOpen ? "sidebar-open" : ""}`}>
       <div className="brand">
         <b className="brandmark">
           <Building2 size={20} />
@@ -451,7 +469,7 @@ function Sidebar({ activePage, dashboard, user, onNavigate, onLogout }) {
           <button
             key={label}
             className={`navitem ${activePage === label ? "active" : ""}`}
-            onClick={() => onNavigate(label)}
+            onClick={() => { onNavigate(label); onClose(); }}
           >
             <Icon size={18} />
             {label}
@@ -481,14 +499,15 @@ function Sidebar({ activePage, dashboard, user, onNavigate, onLogout }) {
         </button>
       </div>
     </aside>
+    </>
   );
 }
 
-function TopBar({ page, user, token, searchText, onSearch }) {
+function TopBar({ page, user, token, searchText, onSearch, onMenu }) {
   return (
     <header>
       <div className="crumb">
-        <Menu size={18} />
+        <button className="menu-toggle" aria-label="Toggle navigation" onClick={onMenu}><Menu size={18} /></button>
         Workspace <span>/</span> <strong>{page}</strong>
       </div>
 
@@ -512,12 +531,28 @@ function TopBar({ page, user, token, searchText, onSearch }) {
 function NotificationBell({ token }) {
   const [notifications, setNotifications] = useState([]);
   const [isOpen, setIsOpen] = useState(false);
+  const [unreadCount, setUnreadCount] = useState(0);
+  const [loading, setLoading] = useState(false);
 
-  async function loadNotifications() {
-    try { setNotifications(await requestApi("/notifications", token)); } catch { /* Header remains usable if notifications are unavailable. */ }
+  async function loadUnreadCount() {
+    try {
+      const result = await requestApi("/notifications/unread-count", token);
+      setUnreadCount(result.unreadCount || 0);
+    } catch { /* Keep the header available if notifications are unavailable. */ }
   }
 
-  useEffect(() => { loadNotifications(); }, [token]);
+  async function loadNotifications() {
+    setLoading(true);
+    try {
+      const items = await requestApi("/notifications", token);
+      setNotifications(items);
+      setUnreadCount(items.filter((item) => !item.readAt).length);
+      await loadUnreadCount();
+    } catch { /* Header remains usable if notifications are unavailable. */ }
+    finally { setLoading(false); }
+  }
+
+  useEffect(() => { loadUnreadCount(); }, [token]);
 
   async function openNotifications() {
     const nextOpen = !isOpen;
@@ -530,10 +565,18 @@ function NotificationBell({ token }) {
     try {
       await requestApi(`/notifications/${notification._id}/read`, token, { method: "PATCH" });
       setNotifications((items) => items.map((item) => item._id === notification._id ? { ...item, readAt: new Date().toISOString() } : item));
+      setUnreadCount((count) => Math.max(0, count - 1));
     } catch { /* The notification can still be read in the list. */ }
   }
 
-  const unreadCount = notifications.filter((notification) => !notification.readAt).length;
+  async function markAllRead() {
+    try {
+      await requestApi("/notifications/read-all", token, { method: "PATCH" });
+      setNotifications((items) => items.map((item) => ({ ...item, readAt: item.readAt || new Date().toISOString() })));
+      setUnreadCount(0);
+    } catch { /* Leave current notification state visible on request failure. */ }
+  }
+
   return (
     <div className="notification-wrap">
       <button className="bell" aria-label={`Notifications${unreadCount ? `, ${unreadCount} unread` : ""}`} aria-expanded={isOpen} onClick={openNotifications}>
@@ -541,8 +584,8 @@ function NotificationBell({ token }) {
       </button>
       {isOpen && (
         <div className="notification-popover">
-          <div className="notification-popover-head"><strong>Notifications</strong><span>{unreadCount} unread</span></div>
-          {notifications.length ? notifications.map((notification) => (
+          <div className="notification-popover-head"><strong>Notifications</strong><span>{unreadCount} unread</span>{unreadCount > 0 && <button onClick={markAllRead}>Mark all read</button>}</div>
+          {loading ? <div className="notification-empty">Loading notifications…</div> : notifications.length ? notifications.map((notification) => (
             <button className={`notification-item ${notification.readAt ? "read" : "unread"}`} key={notification._id} onClick={() => markRead(notification)}>
               <strong>{notification.title}</strong>
               <span>{notification.message}</span>
@@ -1101,7 +1144,7 @@ function ErrorNotice({ message, onDismiss }) {
   );
 }
 
-function DashboardPage({ dashboard, onNavigate }) {
+function DashboardPage({ dashboard, isLoading, onNavigate }) {
   const student = dashboard.role === "student";
   const faculty = dashboard.role === "faculty";
   const technician = dashboard.role === "technician";
@@ -1186,7 +1229,7 @@ function DashboardPage({ dashboard, onNavigate }) {
   return (
     <>
       <div className="cards">
-        {cards.map(([label, value, Icon, color]) => (
+        {isLoading ? Array.from({ length: 4 }, (_, index) => <div className="card card-skeleton" key={index}><i /><i /><i /></div>) : cards.map(([label, value, Icon, color]) => (
           <MetricCard
             key={label}
             label={label}
@@ -1211,7 +1254,7 @@ function DashboardPage({ dashboard, onNavigate }) {
             }
             subtitle="Information from your campus account"
           />
-          {classes.length ? (
+          {isLoading ? <div className="content-skeleton"><i /><i /><i /></div> : classes.length ? (
             classes.map((campusClass) => (
               <div className="glance-row" key={campusClass._id}>
                 <b className="gicon purple">
@@ -1341,16 +1384,45 @@ function ResourceTable({
   onUpdateWork,
   onVerifyRepair,
 }) {
-  const [filters, setFilters] = useState({ room: "", priority: "", status: "", assignee: "" });
+  const [filters, setFilters] = useState({ room: "", priority: "", status: "", assignee: "", bookingStatus: "", building: "", operational: "" });
+  const [sort, setSort] = useState({ column: "", direction: "asc" });
+  const [currentPage, setCurrentPage] = useState(1);
+  const pageSize = 10;
   const matchingRecords = records.filter((record) =>
     JSON.stringify(record).toLowerCase().includes(searchText.toLowerCase()),
   );
-  const filteredRecords = page === "Complaints" ? matchingRecords.filter((record) =>
+  const complaintFilteredRecords = page === "Complaints" ? matchingRecords.filter((record) =>
     (!filters.room || String(record.room?._id || "") === filters.room) &&
     (!filters.priority || record.priority === filters.priority) &&
     (!filters.status || record.status === filters.status) &&
     (!filters.assignee || (filters.assignee === "unassigned" ? !record.assignedTo : String(record.assignedTo?._id || "") === filters.assignee)),
   ) : matchingRecords;
+  const filteredRecords = page === "Room bookings"
+    ? complaintFilteredRecords.filter((record) => !filters.bookingStatus || record.status === filters.bookingStatus)
+    : page === "Classrooms"
+      ? complaintFilteredRecords.filter((record) => (!filters.building || record.building === filters.building) && (!filters.operational || record.operationalStatus === filters.operational))
+      : complaintFilteredRecords;
+  const sortedRecords = [...filteredRecords].sort((left, right) => {
+    if (!sort.column) return 0;
+    const a = getTableSortValue(page, sort.column, left);
+    const b = getTableSortValue(page, sort.column, right);
+    const comparison = typeof a === "number" && typeof b === "number"
+      ? a - b
+      : String(a ?? "").localeCompare(String(b ?? ""), undefined, { numeric: true, sensitivity: "base" });
+    return sort.direction === "asc" ? comparison : -comparison;
+  });
+  const pageCount = Math.max(1, Math.ceil(sortedRecords.length / pageSize));
+  const pageRecords = sortedRecords.slice((currentPage - 1) * pageSize, currentPage * pageSize);
+
+  useEffect(() => { setCurrentPage(1); }, [page, searchText, filters.room, filters.priority, filters.status, filters.assignee, filters.bookingStatus, filters.building, filters.operational]);
+  useEffect(() => { if (currentPage > pageCount) setCurrentPage(pageCount); }, [currentPage, pageCount]);
+
+  function toggleSort(column) {
+    setSort((current) => ({
+      column,
+      direction: current.column === column && current.direction === "asc" ? "desc" : "asc",
+    }));
+  }
 
   return (
     <div className="panel tablepanel">
@@ -1372,14 +1444,21 @@ function ResourceTable({
               <option value="">All assignees</option><option value="unassigned">Unassigned</option>{technicians.map((technician) => <option key={technician.id} value={technician.id}>{technician.name}</option>)}
             </select>}
           </div>}
+          {page === "Room bookings" && <select aria-label="Filter bookings by status" value={filters.bookingStatus} onChange={(event) => setFilters((value) => ({ ...value, bookingStatus: event.target.value }))}>
+            <option value="">All statuses</option>{["Pending", "Approved", "Rejected", "Cancelled"].map((status) => <option key={status}>{status}</option>)}
+          </select>}
+          {page === "Classrooms" && <div className="maintenance-filters">
+            <select aria-label="Filter rooms by building" value={filters.building} onChange={(event) => setFilters((value) => ({ ...value, building: event.target.value }))}><option value="">All buildings</option>{[...new Set(records.map((room) => room.building).filter(Boolean))].sort().map((building) => <option key={building}>{building}</option>)}</select>
+            <select aria-label="Filter rooms by inspection status" value={filters.operational} onChange={(event) => setFilters((value) => ({ ...value, operational: event.target.value }))}><option value="">All inspection statuses</option>{["Operational", "Maintenance required", "Not inspected"].map((status) => <option key={status}>{status}</option>)}</select>
+          </div>}
         </div>
       </PanelHeading>
 
       <div className="tablewrap">
         <table>
-          <TableHeader page={page} />
+          <TableHeader page={page} sort={sort} onSort={toggleSort} />
           <tbody>
-            {filteredRecords.map((record, index) => (
+            {pageRecords.map((record, index) => (
               <ResourceRow
                 key={record._id || index}
                 page={page}
@@ -1405,7 +1484,9 @@ function ResourceTable({
         </table>
 
         {isLoading ? (
-          <div className="empty">Loading {page.toLowerCase()}...</div>
+          <div className="table-skeleton" aria-label={`Loading ${page.toLowerCase()}`}>
+            {Array.from({ length: 5 }, (_, index) => <div className="table-skeleton-row" key={index}><i /><i /><i /><i /></div>)}
+          </div>
         ) : (
           filteredRecords.length === 0 && (
             <div className="empty">
@@ -1415,8 +1496,36 @@ function ResourceTable({
           )
         )}
       </div>
+      {!isLoading && filteredRecords.length > 0 && <div className="table-pagination">
+        <span>Showing {(currentPage - 1) * pageSize + 1}–{Math.min(currentPage * pageSize, sortedRecords.length)} of {sortedRecords.length}</span>
+        <div><button className="secondary" disabled={currentPage === 1} onClick={() => setCurrentPage((value) => Math.max(1, value - 1))}>Previous</button><span>Page {currentPage} of {pageCount}</span><button className="secondary" disabled={currentPage >= pageCount} onClick={() => setCurrentPage((value) => Math.min(pageCount, value + 1))}>Next</button></div>
+      </div>}
     </div>
   );
+}
+
+function getTableSortValue(page, column, record) {
+  const values = {
+    "Activity history": {
+      Actor: record.actor?.name, Record: record.entityType, Action: record.action, Details: record.summary, Date: record.createdAt,
+    },
+    "Room bookings": {
+      "Room / inspection": record.room?.name, Date: record.date, Time: record.startTime, Purpose: record.purpose, "Booked by": record.bookedBy?.name, Status: record.status,
+    },
+    Complaints: {
+      Issue: record.title, "Room / equipment": record.room?.name, Priority: record.priority, Status: record.status, "Reported by": record.submittedBy?.name, Assignee: record.assignedTo?.name, "Date / history": record.createdAt,
+    },
+    Classrooms: {
+      "Room number": record.name, Building: record.building, Floor: record.floor, Type: record.type, Capacity: record.capacity, Availability: record.available, "Inspection status": record.operationalStatus,
+    },
+    Students: { Student: record.name, "Student ID": record.studentId, Department: record.department, Email: record.email },
+    Faculty: { Faculty: record.name, Department: record.department, Email: record.email },
+    Classes: { Course: record.courseName, "Code / section": record.courseCode, Faculty: record.faculty?.name, Schedule: record.day, Enrollment: record.enrolledStudents?.length },
+    Notices: { Notice: record.title, Category: record.category, Published: record.createdAt },
+    Technicians: { Technician: record.name, Role: record.role, Created: record.createdAt },
+    Attendance: { Student: record.student?.name, Date: record.date, Status: record.status },
+  };
+  return values[page]?.[column] ?? record[column.toLowerCase()];
 }
 
 function MaintenanceRow({ record, userRole, canEdit, technicians, onResolve, onAssign, onUpdateWork, onVerify }) {
@@ -1559,8 +1668,9 @@ function RoomInspectionModal({ room, token, onClose, onSaved }) {
   );
 }
 
-function TableHeader({ page }) {
+function TableHeader({ page, sort, onSort }) {
   const columnSets = {
+    "Activity history": ["Actor", "Record", "Action", "Details", "Date"],
     Students: [
       "Student",
       "Student ID",
@@ -1608,7 +1718,7 @@ function TableHeader({ page }) {
     <thead>
       <tr>
         {columnSets[page].map((column) => (
-          <th key={column}>{column}</th>
+          <th key={column} aria-sort={sort.column === column ? (sort.direction === "asc" ? "ascending" : "descending") : "none"}><button className="sort-heading" aria-label={`Sort by ${column}`} onClick={() => onSort(column)}>{column}{sort.column === column ? (sort.direction === "asc" ? " ↑" : " ↓") : ""}</button></th>
         ))}
       </tr>
     </thead>
@@ -1616,6 +1726,16 @@ function TableHeader({ page }) {
 }
 
 function ResourceRow({ page, record, canEdit, onEdit, onDelete, onResolve, onBookingDecision, onBookingCancel, userId, userRole, technicians, canInspectRoom, onInspectRoom, onAssignComplaint, onUpdateWork, onVerifyRepair }) {
+  const [actionBusy, setActionBusy] = useState(false);
+  async function runBookingAction(action) {
+    if (actionBusy) return;
+    setActionBusy(true);
+    try { await action(); }
+    finally { setActionBusy(false); }
+  }
+  if (page === "Activity history") {
+    return <tr><td><strong>{record.actor?.name || "CampusOS"}</strong><small>{record.actor?.role || "System"}</small></td><td><span className="entity-chip">{record.entityType}</span></td><td>{record.action}</td><td>{record.summary}</td><td>{new Date(record.createdAt).toLocaleString()}</td></tr>;
+  }
   if (page === "Technicians") {
     return <tr><td><strong>{record.name}</strong></td><td>Technician</td><td>{new Date(record.createdAt).toLocaleDateString()}</td></tr>;
   }
@@ -1778,19 +1898,20 @@ function ResourceRow({ page, record, canEdit, onEdit, onDelete, onResolve, onBoo
         <td>
           {canEdit && record.status === "Pending" && (
             <>
-              <button className="table-action" onClick={() => onBookingDecision(record, "Approved")}>
-                Approve
+              <button className="table-action" disabled={actionBusy} onClick={() => runBookingAction(() => onBookingDecision(record, "Approved"))}>
+                {actionBusy ? "Saving…" : "Approve"}
               </button>
               <button
                 className="table-action danger"
-                onClick={() => onBookingDecision(record, "Rejected")}
+                disabled={actionBusy}
+                onClick={() => runBookingAction(() => onBookingDecision(record, "Rejected"))}
               >
                 Reject
               </button>
             </>
           )}
           {String(record.bookedBy?._id) === String(userId) && ["Pending", "Approved"].includes(record.status) && (
-            <button className="table-action danger" onClick={() => onBookingCancel(record)}>Cancel</button>
+            <button className="table-action danger" disabled={actionBusy} onClick={() => runBookingAction(() => onBookingCancel(record))}>{actionBusy ? "Saving…" : "Cancel"}</button>
           )}
         </td>
       </tr>

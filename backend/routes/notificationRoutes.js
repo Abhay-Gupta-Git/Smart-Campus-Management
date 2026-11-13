@@ -6,6 +6,15 @@ const { protect } = require("../middleware/authMiddleware");
 const router = express.Router();
 router.use(protect);
 
+router.get("/unread-count", async (req, res) => {
+  try {
+    const unreadCount = await Notification.countDocuments({ recipient: req.user.id, readAt: null });
+    return res.json({ unreadCount });
+  } catch (error) {
+    return res.status(500).json({ message: "Failed to load unread notification count." });
+  }
+});
+
 router.get("/", async (req, res) => {
   try {
     const notifications = await Notification.find({ recipient: req.user.id })
@@ -16,6 +25,18 @@ router.get("/", async (req, res) => {
     return res.json(notifications);
   } catch (error) {
     return res.status(500).json({ message: "Failed to load notifications." });
+  }
+});
+
+router.patch("/read-all", async (req, res) => {
+  try {
+    const result = await Notification.updateMany(
+      { recipient: req.user.id, readAt: null },
+      { $set: { readAt: new Date() } },
+    );
+    return res.json({ updated: result.modifiedCount });
+  } catch (error) {
+    return res.status(500).json({ message: "Failed to mark notifications as read." });
   }
 });
 
