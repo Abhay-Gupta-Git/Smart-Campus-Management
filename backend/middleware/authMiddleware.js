@@ -23,6 +23,9 @@ async function protect(req, res, next) {
 
   try {
     const decodedToken = jwt.verify(token, process.env.JWT_SECRET, { algorithms: ["HS256"] });
+    if (!decodedToken || typeof decodedToken !== "object" || Array.isArray(decodedToken)) {
+      return res.status(401).json({ message: "Invalid or expired token." });
+    }
     const now = Math.floor(Date.now() / 1000);
     if (typeof decodedToken.exp !== "number" || decodedToken.exp <= now ||
       (decodedToken.iat !== undefined && decodedToken.iat > now + 60) ||

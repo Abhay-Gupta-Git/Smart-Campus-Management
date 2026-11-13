@@ -25,6 +25,7 @@ import {
      
 const API_URL = import.meta.env.VITE_API_URL || "http://localhost:5000/api";
 const INSTITUTION_NAME = import.meta.env.VITE_INSTITUTION_NAME?.trim() || "CampusOS";
+const ROOM_TYPES = ["Classroom", "Lecture Hall", "Laboratory", "Meeting Room", "Auditorium", "Other"];
 
 const navigationItems = [
   ["Overview", LayoutDashboard],
@@ -1598,7 +1599,7 @@ function ResourceTable({
           {page === "Classrooms" && <div className="maintenance-filters">
             <input aria-label="Filter rooms by building" placeholder="Building" value={filters.building} onChange={(event) => setFilters((value) => ({ ...value, building: event.target.value }))} />
             <select aria-label="Filter rooms by inspection status" value={filters.operational} onChange={(event) => setFilters((value) => ({ ...value, operational: event.target.value }))}><option value="">All inspection statuses</option>{["Operational", "Maintenance required", "Not inspected"].map((status) => <option key={status}>{status}</option>)}</select>
-            <select aria-label="Filter rooms by type" value={filters.type} onChange={(event) => setFilters((value) => ({ ...value, type: event.target.value }))}><option value="">All room types</option>{["Lecture Hall", "Laboratory", "Seminar Room", "Meeting Room", "Other"].map((type) => <option key={type}>{type}</option>)}</select>
+            <select aria-label="Filter rooms by type" value={filters.type} onChange={(event) => setFilters((value) => ({ ...value, type: event.target.value }))}><option value="">All room types</option>{ROOM_TYPES.map((type) => <option key={type}>{type}</option>)}</select>
             <select aria-label="Filter rooms by availability" value={filters.available} onChange={(event) => setFilters((value) => ({ ...value, available: event.target.value }))}><option value="">Any availability</option><option value="true">Available</option><option value="false">Unavailable</option></select>
           </div>}
         </div>
@@ -2385,9 +2386,10 @@ function getFormFields(page) {
 
 function RecordModal({ page, token, onClose, onSubmit, initialRecord }) {
   const [formValues, setFormValues] = useState(() => {
-    if (!initialRecord) return {};
+    if (!initialRecord) return page === "Classrooms" ? { type: ROOM_TYPES[0] } : {};
     return {
       ...initialRecord,
+      type: page === "Classrooms" && !ROOM_TYPES.includes(initialRecord.type) ? "" : initialRecord.type,
       faculty: initialRecord.faculty?._id || initialRecord.faculty || "",
       room: initialRecord.room?._id || initialRecord.room || "",
       enrolledStudents: (initialRecord.enrolledStudents || []).map(
@@ -2501,7 +2503,12 @@ function RecordModal({ page, token, onClose, onSubmit, initialRecord }) {
         {fields.map(([name, label]) => (
           <label key={name}>
             {label}
-            {name === "day" ? (
+            {name === "type" ? (
+              <select name={name} required value={formValues[name] || ""} onChange={updateField}>
+                <option value="" disabled>Select room type</option>
+                {ROOM_TYPES.map((roomType) => <option key={roomType} value={roomType}>{roomType}</option>)}
+              </select>
+            ) : name === "day" ? (
               <select
                 name={name}
                 required
@@ -2540,7 +2547,7 @@ function RecordModal({ page, token, onClose, onSubmit, initialRecord }) {
                   <option
                     key={option._id}
                     value={option._id}
-                    disabled={name === "room" && !option.available}
+                    disabled={name === "room" && page === "Room bookings" && !option.available}
                   >
                     {name === "room"
                       ? `${option.building} · ${option.name} · ${option.operationalStatus || "Not inspected"}${option.available ? "" : " · Unavailable"}`

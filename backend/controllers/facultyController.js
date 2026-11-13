@@ -1,5 +1,12 @@
 const mongoose = require("mongoose");
 const CampusClass = require("../models/CampusClass");
+const Attendance = require("../models/Attendance");
+const Booking = require("../models/Booking");
+const Complaint = require("../models/Complaint");
+const Notice = require("../models/Notice");
+const Notification = require("../models/Notification");
+const ActivityLog = require("../models/ActivityLog");
+const Room = require("../models/Room");
 const User = require("../models/User");
 const { hashPassword, isAcceptablePassword, MIN_PASSWORD_LENGTH } = require("../utils/password");
 const { isValidEmail, hasOnlyFields } = require("../utils/validation");
@@ -118,14 +125,42 @@ async function deleteFaculty(req, res) {
       if (!await lockUserReference(User, req.params.id, "faculty", session)) {
         return { status: 404, message: "Faculty member not found" };
       }
-      const assignedClass = await CampusClass.exists({ faculty: req.params.id }).session(session);
-      if (assignedClass) {
-        return { status: 409, message: "Reassign this faculty member's classes before removing them" };
+      const references = {
+        classAssignments: await CampusClass.countDocuments({ faculty: req.params.id }).session(session),
+        classEnrollments: await CampusClass.countDocuments({ enrolledStudents: req.params.id }).session(session),
+        attendance: await Attendance.countDocuments({ $or: [{ student: req.params.id }, { markedBy: req.params.id }] }).session(session),
+        bookings: await Booking.countDocuments({ bookedBy: req.params.id }).session(session),
+        complaints: await Complaint.countDocuments({ $or: [
+          { submittedBy: req.params.id },
+          { assignedTo: req.params.id },
+          { verifiedBy: req.params.id },
+          { "history.actor": req.params.id },
+        ] }).session(session),
+        notices: await Notice.countDocuments({ author: req.params.id }).session(session),
+        notifications: await Notification.countDocuments({ $or: [
+          { recipient: req.params.id },
+          { entityType: "account", entityId: req.params.id },
+        ] }).session(session),
+        activityHistory: await ActivityLog.countDocuments({ $or: [
+          { actor: req.params.id },
+          { entityType: "account", entityId: req.params.id },
+        ] }).session(session),
+        roomInspections: await Room.countDocuments({ $or: [
+          { "equipment.inspectedBy": req.params.id },
+          { "inspectionHistory.equipment.inspectedBy": req.params.id },
+        ] }).session(session),
+      };
+      if (Object.values(references).some(Boolean)) {
+        return {
+          status: 409,
+          message: "Faculty account cannot be deleted while campus records reference it. Preserve the account history or remove references through their owning workflows.",
+          references,
+        };
       }
       await User.deleteOne({ _id: req.params.id, role: "faculty" }, { session });
       return { status: 200 };
     });
-    if (result.status !== 200) return res.status(result.status).json({ message: result.message });
+    if (result.status !== 200) return res.status(result.status).json({ message: result.message, ...(result.references ? { references: result.references } : {}) });
 
     await recordActivity({ actor: req.user.id, action: "Faculty account deleted", entityType: "account", entityId: req.params.id, summary: "Removed a faculty account." });
 

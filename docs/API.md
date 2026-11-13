@@ -109,7 +109,7 @@ Student creation/update password requirements are 12 or more characters and at m
 | `GET /api/faculty` | Admin | Query: `search`; `sort=name\|email\|department\|createdAt`; pagination. | `200 [{ name, email, role, department, phone, createdAt }]` | `400`, `401`, `403`, `500` |
 | `POST /api/faculty` | Admin | `{ name, email, password, department?, phone? }` | `201` created Faculty object without password | `400`; `409` duplicate email; `429`; `500` |
 | `PATCH /api/faculty/:id` | Admin | Any non-empty subset of `{ name, email, department, phone, password }`. Password update revokes prior sessions. | `200` updated Faculty object without password | `400`; `404`; `409`; `429`; `500` |
-| `DELETE /api/faculty/:id` | Admin | None | `200 { message: "Faculty member removed" }` | `400` invalid ID; `404`; `409` while assigned to a class; `503` without transactions; `500` |
+| `DELETE /api/faculty/:id` | Admin | None | `200 { message: "Faculty member removed" }` | `400` invalid ID; `404`; `409` when class, enrollment, attendance, booking, complaint/history, notice, notification, activity, or room inspection references exist (response includes per-category counts); `503` without transactions; `500` |
 
 Faculty creation/update password requirements are 12 or more characters and at most 72 UTF-8 bytes.
 
