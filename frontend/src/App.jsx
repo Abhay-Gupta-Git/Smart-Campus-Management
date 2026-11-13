@@ -2132,7 +2132,7 @@ function getFormFields(page) {
     Students: [
       ["name", "Full name"],
       ["email", "Email"],
-      ["password", "Temporary password"],
+      ["password", "Temporary password (12+ characters)"],
       ["studentId", "Student ID"],
       ["department", "Department"],
     ],
@@ -2152,7 +2152,7 @@ function getFormFields(page) {
     Faculty: [
       ["name", "Full name"],
       ["email", "Email"],
-      ["password", "Temporary password"],
+      ["password", "Temporary password (12+ characters)"],
       ["department", "Department"],
     ],
     Classes: [
@@ -2419,8 +2419,8 @@ function RecordModal({ page, token, onClose, onSubmit, initialRecord }) {
                 required={name !== "password" || !initialRecord}
                 type={getInputType(name)}
                 value={formValues[name] ?? (name === "maxEnrollment" ? 60 : "")}
-                minLength={name === "password" ? (page === "Technicians" ? 12 : 8) : undefined}
-                maxLength={name === "purpose" ? 500 : undefined}
+                minLength={name === "password" ? 12 : undefined}
+                maxLength={name === "password" ? 72 : name === "purpose" ? 500 : undefined}
                 min={
                   name === "date"
                     ? new Date().toISOString().slice(0, 10)

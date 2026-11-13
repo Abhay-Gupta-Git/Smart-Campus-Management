@@ -77,6 +77,9 @@ async function getInitialAdminPassword() {
   if (password.length < 12) {
     throw new Error("Use a password with at least 12 characters.");
   }
+  if (Buffer.byteLength(password, "utf8") > 72) {
+    throw new Error("Use a password no longer than 72 UTF-8 bytes.");
+  }
 
   if (password !== confirmation) {
     throw new Error("The passwords did not match.");
@@ -88,6 +91,9 @@ async function getInitialAdminPassword() {
 async function saveInitialAdmin({ configuredEmail, adminName, password }) {
   if (password.length < 12) {
     throw new Error("Use a password with at least 12 characters.");
+  }
+  if (Buffer.byteLength(password, "utf8") > 72) {
+    throw new Error("Use a password no longer than 72 UTF-8 bytes.");
   }
 
   const existingAdmin = await User.exists({

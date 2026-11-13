@@ -2,6 +2,7 @@ const express = require("express");
 const mongoose = require("mongoose");
 const Notification = require("../models/Notification");
 const { protect } = require("../middleware/authMiddleware");
+const { readPagination, executeListQuery } = require("../utils/pagination");
 
 const router = express.Router();
 router.use(protect);
@@ -17,11 +18,15 @@ router.get("/unread-count", async (req, res) => {
 
 router.get("/", async (req, res) => {
   try {
-    const notifications = await Notification.find({ recipient: req.user.id })
+    const filter = { recipient: req.user.id };
+    const pagination = readPagination(req, res);
+    if (pagination === false) return;
+    const query = Notification.find(filter)
       .populate({ path: "complaint", select: "title status room", populate: { path: "room", select: "name building" } })
       .sort("-createdAt")
-      .limit(50)
       .lean();
+    if (!pagination) query.limit(50);
+    const notifications = await executeListQuery({ query, Model: Notification, filter, pagination, res });
     return res.json(notifications);
   } catch (error) {
     return res.status(500).json({ message: "Failed to load notifications." });

@@ -6,6 +6,7 @@ const userSchema = new mongoose.Schema(
       type: String,
       required: true,
       trim: true,
+      maxlength: 120,
     },
     email: {
       type: String,
@@ -13,10 +14,12 @@ const userSchema = new mongoose.Schema(
       unique: true,
       lowercase: true,
       trim: true,
+      maxlength: 254,
     },
     password: {
       type: String,
       required: true,
+      select: false,
     },
     role: {
       type: String,
@@ -26,17 +29,23 @@ const userSchema = new mongoose.Schema(
     studentId: {
       type: String,
       default: null,
+      maxlength: 64,
     },
     department: {
       type: String,
       default: null,
+      maxlength: 120,
     },
     phone: {
       type: String,
       default: "",
+      maxlength: 30,
     },
+    tokenVersion: { type: Number, default: 0, select: false, min: 0 },
   },
   { timestamps: true },
 );
+
+userSchema.index({ role: 1, name: 1 });
 
 module.exports = mongoose.model("User", userSchema);

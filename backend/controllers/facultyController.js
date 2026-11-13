@@ -2,12 +2,17 @@ const CampusClass = require("../models/CampusClass");
 const User = require("../models/User");
 const { hashPassword, isAcceptablePassword, MIN_PASSWORD_LENGTH } = require("../utils/password");
 const { isValidEmail, hasOnlyFields } = require("../utils/validation");
+const { readPagination, executeListQuery } = require("../utils/pagination");
+const respondError = require("../utils/respondError");
 
 async function listFaculty(req, res) {
   try {
-    const faculty = await User.find({ role: "faculty" })
+    const filter = { role: "faculty" };
+    const pagination = readPagination(req, res);
+    if (pagination === false) return;
+    const faculty = await executeListQuery({ query: User.find(filter)
       .select("name email role department phone createdAt")
-      .sort("name").lean();
+      .sort("name").lean(), Model: User, filter, pagination, res });
 
     return res.json(faculty);
   } catch (error) {
@@ -41,11 +46,7 @@ async function createFaculty(req, res) {
 
     return res.status(201).json(safeFaculty);
   } catch (error) {
-    const status = error.code === 11000 ? 409 : 400;
-    const message =
-      error.code === 11000 ? "Email already registered" : error.message;
-
-    return res.status(status).json({ message });
+    return respondError(res, error, "Faculty creation", "Unable to create faculty account.");
   }
 }
 
@@ -78,10 +79,11 @@ async function updateFaculty(req, res) {
 
       updates.password = await hashPassword(password);
     }
+    if (!Object.keys(updates).length) return res.status(400).json({ message: "Provide at least one field to update." });
 
     const faculty = await User.findOneAndUpdate(
       { _id: req.params.id, role: "faculty" },
-      updates,
+      { $set: updates, ...(password !== undefined ? { $inc: { tokenVersion: 1 } } : {}) },
       { new: true, runValidators: true },
     ).select("-password");
 
@@ -91,11 +93,7 @@ async function updateFaculty(req, res) {
 
     return res.json(faculty);
   } catch (error) {
-    const status = error.code === 11000 ? 409 : 400;
-    const message =
-      error.code === 11000 ? "Email already registered" : error.message;
-
-    return res.status(status).json({ message });
+    return respondError(res, error, "Faculty update", "Unable to update faculty account.");
   }
 }
 
@@ -120,7 +118,7 @@ async function deleteFaculty(req, res) {
 
     return res.json({ message: "Faculty member removed" });
   } catch (error) {
-    return res.status(400).json({ message: error.message });
+    return respondError(res, error, "Faculty deletion", "Unable to remove faculty account.");
   }
 }
 

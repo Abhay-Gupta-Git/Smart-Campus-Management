@@ -257,7 +257,7 @@ async function getRoomForecast(req, res) {
       insufficientHistoryMessage: sufficientHistory ? undefined : `Forecasts require at least ${MIN_BOOKINGS} approved bookings across ${MIN_ACTIVE_WEEKS} different weeks. Found ${validHistory.length} bookings across ${activeWeeks} weeks. Historical summaries are shown without predictions.`,
     });
   } catch (error) {
-    console.error("Room forecast request failed:", error.message);
+    console.error("Room forecast request failed:", error.name || "Error");
     return res.status(500).json({ message: "Failed to build room usage forecast." });
   }
 }

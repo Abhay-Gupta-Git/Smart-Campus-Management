@@ -4,6 +4,8 @@ const Notification = require("../models/Notification");
 const Room = require("../models/Room");
 const User = require("../models/User");
 const recordActivity = require("../utils/activityLog");
+const { readPagination, executeListQuery } = require("../utils/pagination");
+const { hasOnlyFields } = require("../utils/validation");
 
 const equipmentTypes = ["Fan", "AC", "Projector", "Light"];
 const priorities = ["Low", "Normal", "High", "Urgent"];
@@ -15,7 +17,7 @@ async function notifyUsers(recipients, complaint, title, message) {
   try {
     await Notification.insertMany(uniqueIds.map((recipient) => ({ recipient, complaint: complaint?._id || complaint || null, title, message })));
   } catch (error) {
-    console.error("Complaint notification failed:", error.message);
+    console.error("Complaint notification failed:", error.name || "Error");
   }
 }
 
@@ -24,7 +26,7 @@ async function notifyRole(role, complaint, title, message, extraRecipients = [])
     const users = await User.find({ role }).select("_id").lean();
     await notifyUsers([...users.map((user) => user._id), ...extraRecipients], complaint, title, message);
   } catch (error) {
-    console.error("Role notification failed:", error.message);
+    console.error("Role notification failed:", error.name || "Error");
   }
 }
 
@@ -74,16 +76,19 @@ async function listComplaints(req, res) {
     }
 
     const filter = filterParts.length === 1 ? filterParts[0] : { $and: filterParts };
-    const complaints = await populatedComplaints(Complaint.find(filter).sort("-createdAt"));
+    const pagination = readPagination(req, res);
+    if (pagination === false) return;
+    const complaints = await executeListQuery({ query: populatedComplaints(Complaint.find(filter).sort("-createdAt")), Model: Complaint, filter, pagination, res });
     return res.json(complaints);
   } catch (error) {
-    console.error("List complaints failed:", error.message);
+    console.error("List complaints failed:", error.name || "Error");
     return res.status(500).json({ message: "Failed to load maintenance notices." });
   }
 }
 
 async function createComplaint(req, res) {
   const body = req.body || {};
+  if (!hasOnlyFields(body, ["title", "description", "category", "room", "equipment", "priority"])) return res.status(400).json({ message: "Request contains unsupported fields." });
   if (typeof body.title !== "string" || !body.title.trim() || body.title.trim().length > 160 ||
     typeof body.description !== "string" || !body.description.trim() || body.description.trim().length > 3000) {
     return res.status(400).json({ message: "A title and issue description are required." });
@@ -125,7 +130,7 @@ async function createComplaint(req, res) {
     }
     return res.status(201).json(await populatedComplaints(Complaint.findById(complaint._id)));
   } catch (error) {
-    console.error("Create complaint failed:", error.message);
+    console.error("Create complaint failed:", error.name || "Error");
     return res.status(400).json({ message: "Unable to submit complaint. Check the required fields." });
   }
 }
@@ -139,6 +144,7 @@ async function assignComplaint(req, res) {
   const { id } = req.params;
   const { note = "" } = req.body || {};
   const technicianId = req.body?.technicianId || null;
+  if (!hasOnlyFields(req.body || {}, ["technicianId", "note"])) return res.status(400).json({ message: "Request contains unsupported fields." });
   if (!validId(id)) return res.status(400).json({ message: "Invalid complaint ID." });
   if (technicianId !== null && !validId(technicianId)) return res.status(400).json({ message: "Choose a valid technician." });
   if (typeof note !== "string" || note.length > 1000) return res.status(400).json({ message: "Assignment note must be 1,000 characters or fewer." });
@@ -166,7 +172,7 @@ async function assignComplaint(req, res) {
     await notifyUsers([complaint.submittedBy, previousAssignee, technician?._id], complaint, technician ? "Maintenance issue assigned" : "Maintenance assignment updated", `${complaint.equipment} issue for ${label} is ${technician ? `assigned to ${technician.name}` : "unassigned"}.`);
     return res.json(await populatedComplaints(Complaint.findById(complaint._id)));
   } catch (error) {
-    console.error("Assign complaint failed:", error.message);
+    console.error("Assign complaint failed:", error.name || "Error");
     return res.status(500).json({ message: "Failed to assign maintenance issue." });
   }
 }
@@ -174,6 +180,7 @@ async function assignComplaint(req, res) {
 async function updateWork(req, res) {
   const { id } = req.params;
   const { status, note = "", resolutionDetails = "", evidence = [] } = req.body || {};
+  if (!hasOnlyFields(req.body || {}, ["status", "note", "resolutionDetails", "evidence"])) return res.status(400).json({ message: "Request contains unsupported fields." });
   if (!validId(id)) return res.status(400).json({ message: "Invalid complaint ID." });
   if (!["In progress", "Pending Verification"].includes(status)) return res.status(400).json({ message: "Work status must be In progress or Pending Verification." });
   if (typeof note !== "string" || note.trim().length > 2000) return res.status(400).json({ message: "Work update must be 2,000 characters or fewer." });
@@ -209,7 +216,7 @@ async function updateWork(req, res) {
     if (status === "Pending Verification") await notifyRole("faculty", complaint, "Repair needs verification", `${complaint.equipment} repair for ${label} is ready for faculty verification.`);
     return res.json(await populatedComplaints(Complaint.findById(complaint._id)));
   } catch (error) {
-    console.error("Update maintenance work failed:", error.message);
+    console.error("Update maintenance work failed:", error.name || "Error");
     return res.status(500).json({ message: "Failed to update maintenance work." });
   }
 }
@@ -217,6 +224,7 @@ async function updateWork(req, res) {
 async function verifyRepair(req, res) {
   const { id } = req.params;
   const { decision, note = "" } = req.body || {};
+  if (!hasOnlyFields(req.body || {}, ["decision", "note"])) return res.status(400).json({ message: "Request contains unsupported fields." });
   if (!validId(id)) return res.status(400).json({ message: "Invalid complaint ID." });
   if (!["accept", "reject"].includes(decision)) return res.status(400).json({ message: "Decision must be accept or reject." });
   if (typeof note !== "string" || note.trim().length > 2000 || (decision === "reject" && !note.trim())) return res.status(400).json({ message: "Provide a rejection reason of up to 2,000 characters." });
@@ -245,7 +253,7 @@ async function verifyRepair(req, res) {
     await notifyUsers(recipients, complaint, decision === "accept" ? "Repair verified" : "Repair verification rejected", decision === "accept" ? `${complaint.equipment} repair for ${label} was accepted and the issue is closed.` : `${complaint.equipment} repair for ${label} was rejected and returned for more work.`);
     return res.json(await populatedComplaints(Complaint.findById(complaint._id)));
   } catch (error) {
-    console.error("Repair verification failed:", error.message);
+    console.error("Repair verification failed:", error.name || "Error");
     return res.status(500).json({ message: "Failed to verify repair." });
   }
 }
@@ -278,13 +286,14 @@ async function refreshRoomMaintenance(closedComplaint) {
     }));
     await room.save();
   } catch (error) {
-    console.error("Room maintenance status refresh failed:", error.message);
+    console.error("Room maintenance status refresh failed:", error.name || "Error");
   }
 }
 
 async function updateGenericComplaint(req, res) {
   if (!validId(req.params.id)) return res.status(400).json({ message: "Invalid complaint ID." });
   const { status } = req.body || {};
+  if (!hasOnlyFields(req.body || {}, ["status"])) return res.status(400).json({ message: "Request contains unsupported fields." });
   if (!statuses.includes(status) || ["Pending Verification", "Closed"].includes(status)) return res.status(400).json({ message: "Choose a valid complaint status." });
   try {
     const complaint = await Complaint.findById(req.params.id);
@@ -298,7 +307,7 @@ async function updateGenericComplaint(req, res) {
     await notifyUsers([complaint.submittedBy], complaint, "Complaint updated", `Your complaint status changed to ${status}.`);
     return res.json(await populatedComplaints(Complaint.findById(complaint._id)));
   } catch (error) {
-    console.error("Update complaint failed:", error.message);
+    console.error("Update complaint failed:", error.name || "Error");
     return res.status(500).json({ message: "Failed to update complaint." });
   }
 }

@@ -4,7 +4,7 @@ const { protect, authorizeRoles } = require("../middleware/authMiddleware");
 
 const router = express.Router();
 router.use(protect);
-router.get("/", attendanceController.listAttendance);
+router.get("/", authorizeRoles("admin", "faculty", "student"), attendanceController.listAttendance);
 router.post(
   "/",
   authorizeRoles("admin", "faculty"),

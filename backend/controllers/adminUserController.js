@@ -1,15 +1,9 @@
-const bcrypt = require("bcryptjs");
 const User = require("../models/User");
+const { readPagination, executeListQuery } = require("../utils/pagination");
+const { hashPassword, isAcceptablePassword, MIN_PASSWORD_LENGTH } = require("../utils/password");
+const { isValidEmail } = require("../utils/validation");
 
-const minimumPasswordLength = 12;
-const maximumBcryptPasswordBytes = 72;
-
-function isValidEmail(email) {
-  return (
-    typeof email === "string" &&
-    /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)
-  );
-}
+const minimumPasswordLength = MIN_PASSWORD_LENGTH;
 
 function hasUnsupportedFields(body) {
   const allowedFields = new Set(["email", "name", "password"]);
@@ -90,9 +84,7 @@ async function provisionConfiguredAdmin(req, res) {
     }
 
     if (
-      typeof body.password !== "string" ||
-      body.password.length < minimumPasswordLength ||
-      Buffer.byteLength(body.password, "utf8") > maximumBcryptPasswordBytes
+      !isAcceptablePassword(body.password)
     ) {
       return res.status(400).json({
         message:
@@ -100,7 +92,7 @@ async function provisionConfiguredAdmin(req, res) {
       });
     }
 
-    const hashedPassword = await bcrypt.hash(body.password, 12);
+    const hashedPassword = await hashPassword(body.password);
 
     await User.create({
       name: body.name.trim(),
@@ -133,26 +125,29 @@ async function provisionTechnician(req, res) {
   if (typeof body.name !== "string" || !body.name.trim() || body.name.trim().length > 120 || !isValidEmail(body.email)) {
     return res.status(400).json({ message: "A valid name and email are required." });
   }
-  if (typeof body.password !== "string" || body.password.length < minimumPasswordLength || Buffer.byteLength(body.password, "utf8") > maximumBcryptPasswordBytes) {
+  if (!isAcceptablePassword(body.password)) {
     return res.status(400).json({ message: "Password must be at least 12 characters and no more than 72 UTF-8 bytes." });
   }
   try {
     const email = body.email.trim().toLowerCase();
     const exists = await User.exists({ email });
     if (exists) return res.status(409).json({ message: "An account with this email already exists." });
-    const password = await bcrypt.hash(body.password, 12);
+    const password = await hashPassword(body.password);
     const technician = await User.create({ name: body.name.trim(), email, password, role: "technician" });
     return res.status(201).json({ technician: { id: technician._id, name: technician.name, role: technician.role } });
   } catch (error) {
     if (error.code === 11000) return res.status(409).json({ message: "An account with this email already exists." });
-    console.error("Technician provisioning failed:", error.message);
+    console.error("Technician provisioning failed:", error.name || "Error");
     return res.status(500).json({ message: "Unable to create technician account." });
   }
 }
 
 async function listTechnicians(req, res) {
   try {
-    const technicians = await User.find({ role: "technician" }).select("name role createdAt").sort("name").lean();
+    const filter = { role: "technician" };
+    const pagination = readPagination(req, res);
+    if (pagination === false) return;
+    const technicians = await executeListQuery({ query: User.find(filter).select("name role createdAt").sort("name").lean(), Model: User, filter, pagination, res });
     return res.json(technicians.map(({ _id, name, role, createdAt }) => ({ id: _id, name, role, createdAt })));
   } catch (error) {
     return res.status(500).json({ message: "Unable to load technician accounts." });

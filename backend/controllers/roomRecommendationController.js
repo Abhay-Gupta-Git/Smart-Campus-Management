@@ -71,7 +71,7 @@ async function recommendRooms(req, res) {
       message: recommendations.length ? undefined : "No suitable room is available for this time slot.",
     });
   } catch (error) {
-    console.error("Room recommendation error:", error.message);
+    console.error("Room recommendation error:", error.name || "Error");
     return res.status(500).json({ message: "Unable to load room recommendations. Please try again." });
   }
 }

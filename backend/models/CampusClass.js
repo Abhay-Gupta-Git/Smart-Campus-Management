@@ -37,5 +37,8 @@ const campusClassSchema = new mongoose.Schema(
 );
 
 campusClassSchema.index({ courseCode: 1, section: 1 }, { unique: true });
+campusClassSchema.index({ faculty: 1, day: 1, startTime: 1 });
+campusClassSchema.index({ enrolledStudents: 1, day: 1, startTime: 1 });
+campusClassSchema.index({ day: 1, room: 1, startTime: 1, endTime: 1 });
 
 module.exports = mongoose.model("CampusClass", campusClassSchema);

@@ -17,12 +17,13 @@ function createRateLimiter({ windowMs, limit, message }) {
       for (const [candidate, value] of hits) {
         if (value.resetAt <= now) hits.delete(candidate);
       }
+      while (hits.size > 25_000) hits.delete(hits.keys().next().value);
     }
 
     const remaining = Math.max(0, limit - bucket.count);
     res.set("RateLimit-Limit", String(limit));
     res.set("RateLimit-Remaining", String(remaining));
-    res.set("RateLimit-Reset", String(Math.ceil(bucket.resetAt / 1000)));
+    res.set("RateLimit-Reset", String(Math.max(1, Math.ceil((bucket.resetAt - now) / 1000))));
     if (bucket.count > limit) {
       res.set("Retry-After", String(Math.max(1, Math.ceil((bucket.resetAt - now) / 1000))));
       return res.status(429).json({ message });

@@ -84,7 +84,7 @@ async function register(req, res) {
       return res.status(409).json({ message: "Email already registered" });
     }
 
-    console.error("Registration failed:", error.message);
+    console.error("Registration failed:", error.name || "Error");
     return res.status(500).json({ message: "Registration failed" });
   }
 }
@@ -110,7 +110,7 @@ async function login(req, res) {
     }
 
     const normalizedEmail = email.trim().toLowerCase();
-    const user = await User.findOne({ email: normalizedEmail });
+    const user = await User.findOne({ email: normalizedEmail }).select("+password +tokenVersion");
 
     if (!user) {
       return res.status(401).json({ message: "Invalid email or password" });
@@ -132,7 +132,7 @@ async function login(req, res) {
     }
 
     const token = jwt.sign(
-      { id: user._id.toString() },
+      { id: user._id.toString(), ver: user.tokenVersion || 0 },
       process.env.JWT_SECRET,
       { algorithm: "HS256", expiresIn: "1d" },
     );
@@ -143,7 +143,7 @@ async function login(req, res) {
       user: getPublicUser(user),
     });
   } catch (error) {
-    console.error("Login failed:", error.message);
+    console.error("Login failed:", error.name || "Error");
     return res.status(500).json({ message: "Login failed" });
   }
 }

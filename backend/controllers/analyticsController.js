@@ -171,7 +171,7 @@ async function getAnalytics(req, res) {
       periodGranularity: range === "all" ? "month" : "day",
     });
   } catch (error) {
-    console.error("Analytics request failed:", error.message);
+    console.error("Analytics request failed:", error.name || "Error");
     return res.status(500).json({ message: "Failed to load analytics." });
   }
 }

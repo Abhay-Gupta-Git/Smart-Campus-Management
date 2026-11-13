@@ -23,6 +23,9 @@ function validateEnvironment(env = process.env) {
     if (!/^https?:$/.test(parsed.protocol) || parsed.origin !== value.replace(/\/$/, "")) {
       throw new Error("CLIENT_URL entries must be origins without paths or credentials.");
     }
+    if (isProduction && parsed.protocol !== "https:" && !["localhost", "127.0.0.1", "::1"].includes(parsed.hostname)) {
+      throw new Error("Production CLIENT_URL origins must use HTTPS.");
+    }
     return parsed.origin;
   });
   return { port, trustProxy, origins, isProduction };

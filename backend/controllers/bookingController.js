@@ -4,13 +4,15 @@ const Room = require("../models/Room");
 const Notification = require("../models/Notification");
 const User = require("../models/User");
 const recordActivity = require("../utils/activityLog");
+const { readPagination, executeListQuery } = require("../utils/pagination");
+const { isValidDateString } = require("../utils/validation");
 
 async function notifyBooking(recipients, title, message) {
   try {
     const ids = [...new Set(recipients.filter(Boolean).map((id) => id.toString()))];
     if (ids.length) await Notification.insertMany(ids.map((recipient) => ({ recipient, title, message })));
   } catch (error) {
-    console.error("Booking notification failed:", error.message);
+    console.error("Booking notification failed:", error.name || "Error");
   }
 }
 
@@ -48,18 +50,18 @@ function conflictFilter(details, excludedId) {
 }
 
 async function populatedBooking(id, session) {
-  let query = Booking.findById(id).populate("room").populate("bookedBy", "name email");
+  let query = Booking.findById(id).populate("room").populate("bookedBy", "name");
   if (session) query = query.session(session);
   return query;
 }
 
 function handleError(res, error, fallback) {
   if (error.code === 11000) return res.status(409).json({ message: "This booking conflicts with another request." });
-  if (error.name === "ValidationError" || error.name === "CastError") return res.status(400).json({ message: error.message });
+  if (error.name === "ValidationError" || error.name === "CastError") return res.status(400).json({ message: "Booking request data is invalid." });
   if (error.code === 20 || /transaction numbers are only allowed|replica set/i.test(error.message || "")) {
     return res.status(503).json({ message: "Booking approval requires MongoDB transaction support. Configure MongoDB as a replica set and retry." });
   }
-  console.error(`${fallback}:`, error.message);
+  console.error(`${fallback}:`, error.name || "Error");
   return res.status(500).json({ message: fallback });
 }
 
@@ -85,7 +87,7 @@ async function createBooking(req, res) {
     try {
       const admins = await User.find({ role: "admin" }).select("_id").lean();
       await notifyBooking(admins.map((admin) => admin._id), "New room booking request", `${room.name} in ${room.building} requested for ${booking.date}, ${booking.startTime}–${booking.endTime}.`);
-    } catch (error) { console.error("Booking notification recipients lookup failed:", error.message); }
+    } catch (error) { console.error("Booking notification recipients lookup failed:", error.name || "Error"); }
     return res.status(201).json({ message: "Booking request submitted for approval.", booking: await populatedBooking(booking._id) });
   } catch (error) {
     return handleError(res, error, "Booking request failed.");
@@ -96,13 +98,15 @@ async function getBookings(req, res) {
   try {
     const filter = req.user.role === "admin" ? {} : { bookedBy: req.user.id };
     if (req.query.date) {
-      if (!/^\d{4}-\d{2}-\d{2}$/.test(req.query.date)) return res.status(400).json({ message: "Date filter must use YYYY-MM-DD." });
+      if (!isValidDateString(req.query.date)) return res.status(400).json({ message: "Date filter must use a valid YYYY-MM-DD date." });
       filter.date = req.query.date;
     }
-    const bookings = await Booking.find(filter)
+    const pagination = readPagination(req, res);
+    if (pagination === false) return;
+    const bookings = await executeListQuery({ query: Booking.find(filter)
       .populate("room")
-      .populate("bookedBy", "name email")
-      .sort({ date: 1, startTime: 1, createdAt: -1 });
+      .populate("bookedBy", "name")
+      .sort({ date: 1, startTime: 1, createdAt: -1 }), Model: Booking, filter, pagination, res });
     return res.json(bookings);
   } catch (error) {
     return handleError(res, error, "Failed to fetch booking requests.");
@@ -180,7 +184,7 @@ async function cancelBooking(req, res) {
     try {
       const admins = await User.find({ role: "admin" }).select("_id").lean();
       await notifyBooking(admins.map((admin) => admin._id), "Room booking cancelled", `${room?.name || "Room"} booking for ${booking.date} was cancelled.`);
-    } catch (error) { console.error("Booking notification recipients lookup failed:", error.message); }
+    } catch (error) { console.error("Booking notification recipients lookup failed:", error.name || "Error"); }
     return res.json({ message: "Booking request cancelled.", booking: await populatedBooking(booking._id) });
   } catch (error) {
     return handleError(res, error, "Failed to cancel booking request.");

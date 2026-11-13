@@ -5,7 +5,7 @@ const { protect, authorizeRoles } = require("../middleware/authMiddleware");
 const router = express.Router();
 
 router.use(protect);
-router.get("/", classController.listClasses);
+router.get("/", authorizeRoles("admin", "faculty", "student"), classController.listClasses);
 router.post("/", authorizeRoles("admin"), classController.createClass);
 router.put("/:id", authorizeRoles("admin"), classController.updateClass);
 router.delete("/:id", authorizeRoles("admin"), classController.deleteClass);

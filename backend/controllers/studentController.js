@@ -2,6 +2,8 @@ const User = require("../models/User");
 const { hashPassword, isAcceptablePassword, MIN_PASSWORD_LENGTH } = require("../utils/password");
 const { isValidEmail, hasOnlyFields } = require("../utils/validation");
 const CampusClass = require("../models/CampusClass");
+const { readPagination, executeListQuery } = require("../utils/pagination");
+const respondError = require("../utils/respondError");
 
 async function listStudents(req, res) {
   try {
@@ -14,7 +16,9 @@ async function listStudents(req, res) {
     const selectFields = req.user.role === "admin"
       ? "name email role studentId department createdAt"
       : "name studentId department";
-    const students = await User.find(studentFilter).select(selectFields).sort("name").lean();
+    const pagination = readPagination(req, res);
+    if (pagination === false) return;
+    const students = await executeListQuery({ query: User.find(studentFilter).select(selectFields).sort("name").lean(), Model: User, filter: studentFilter, pagination, res });
 
     return res.json(students);
   } catch (error) {
@@ -49,11 +53,7 @@ async function createStudent(req, res) {
 
     return res.status(201).json(safeStudent);
   } catch (error) {
-    const statusCode = error.code === 11000 ? 409 : 400;
-    const message =
-      error.code === 11000 ? "Email already registered" : error.message;
-
-    return res.status(statusCode).json({ message });
+    return respondError(res, error, "Student creation", "Unable to create student account.");
   }
 }
 
@@ -98,10 +98,11 @@ async function updateStudent(req, res) {
 
       updates.password = await hashPassword(password);
     }
+    if (!Object.keys(updates).length) return res.status(400).json({ message: "Provide at least one field to update." });
 
     const student = await User.findOneAndUpdate(
       { _id: req.params.id, role: "student" },
-      updates,
+      { $set: updates, ...(password !== undefined ? { $inc: { tokenVersion: 1 } } : {}) },
       { new: true, runValidators: true },
     ).select("-password");
 
@@ -111,11 +112,7 @@ async function updateStudent(req, res) {
 
     return res.json(student);
   } catch (error) {
-    const statusCode = error.code === 11000 ? 409 : 400;
-    const message =
-      error.code === 11000 ? "Email already registered" : error.message;
-
-    return res.status(statusCode).json({ message });
+    return respondError(res, error, "Student update", "Unable to update student account.");
   }
 }
 
@@ -132,7 +129,7 @@ async function deleteStudent(req, res) {
 
     return res.json({ message: "Student removed" });
   } catch (error) {
-    return res.status(400).json({ message: error.message });
+    return respondError(res, error, "Student deletion", "Unable to remove student account.");
   }
 }
 

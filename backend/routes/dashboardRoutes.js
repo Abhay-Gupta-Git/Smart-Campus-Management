@@ -143,7 +143,7 @@ router.get("/", protect, async (req, res) => {
 
     return await getAdminDashboard(req, res);
   } catch (error) {
-    console.error("Dashboard request failed:", error.message);
+    console.error("Dashboard request failed:", error.name || "Error");
     return res.status(500).json({ message: "Failed to load dashboard" });
   }
 });

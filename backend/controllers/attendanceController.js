@@ -1,12 +1,17 @@
 const Attendance = require("../models/Attendance");
 const CampusClass = require("../models/CampusClass");
 const User = require("../models/User");
+const mongoose = require("mongoose");
+const { hasOnlyFields, isValidDateString } = require("../utils/validation");
+const { readPagination, executeListQuery } = require("../utils/pagination");
+const respondError = require("../utils/respondError");
 
 async function listAttendance(req, res) {
   try {
     const filter = {};
 
     if (req.query.date) {
+      if (!isValidDateString(req.query.date)) return res.status(400).json({ message: "Date filter must be a valid YYYY-MM-DD date." });
       filter.date = req.query.date;
     }
 
@@ -21,10 +26,12 @@ async function listAttendance(req, res) {
       filter.campusClass = { $in: assignedClasses.map((item) => item._id) };
     }
 
-    const records = await Attendance.find(filter)
-      .populate("student", "name email studentId department")
+    const pagination = readPagination(req, res);
+    if (pagination === false) return;
+    const records = await executeListQuery({ query: Attendance.find(filter)
+      .populate("student", "name studentId department")
       .populate("campusClass", "courseName courseCode section")
-      .sort("-date");
+      .sort("-date"), Model: Attendance, filter, pagination, res });
 
     return res.json(records);
   } catch (error) {
@@ -34,11 +41,14 @@ async function listAttendance(req, res) {
 
 async function markAttendance(req, res) {
   try {
-    const { student: studentId, campusClass: classId, date, status } = req.body;
+    const body = req.body || {};
+    if (!hasOnlyFields(body, ["student", "campusClass", "date", "status"])) return res.status(400).json({ message: "Request contains unsupported fields." });
+    const { student: studentId, campusClass: classId, date, status } = body;
 
     if (
-      !classId ||
-      !/^\d{4}-\d{2}-\d{2}$/.test(date || "") ||
+      !mongoose.isValidObjectId(classId) ||
+      !mongoose.isValidObjectId(studentId) ||
+      !isValidDateString(date) ||
       !["present", "absent", "late"].includes(status)
     ) {
       return res
@@ -85,7 +95,7 @@ async function markAttendance(req, res) {
 
     return res.json(record);
   } catch (error) {
-    return res.status(400).json({ message: error.message });
+    return respondError(res, error, "Attendance update", "Unable to save attendance.");
   }
 }
 

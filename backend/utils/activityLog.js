@@ -5,7 +5,7 @@ async function recordActivity({ actor, action, entityType, entityId, summary }) 
     await ActivityLog.create({ actor, action, entityType, entityId, summary });
   } catch (error) {
     // Activity capture must not make a successful core operation appear to fail.
-    console.error("Activity log write failed:", error.message);
+    console.error("Activity log write failed:", error.name || "Error");
   }
 }
 

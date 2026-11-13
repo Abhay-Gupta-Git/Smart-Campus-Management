@@ -1,6 +1,8 @@
 const mongoose = require("mongoose");
 const Room = require("../models/Room");
 const recordActivity = require("../utils/activityLog");
+const { hasOnlyFields } = require("../utils/validation");
+const { readPagination, executeListQuery } = require("../utils/pagination");
 
 const allowedFields = ["name", "building", "floor", "capacity", "type", "available", "facilities"];
 
@@ -21,13 +23,16 @@ function sendRoomError(res, error) {
   if (error.name === "ValidationError" || error.name === "CastError") {
     return res.status(400).json({ message: error.message });
   }
-  console.error("Room request failed:", error.message);
+  console.error("Room request failed:", error.name || "Error");
   return res.status(500).json({ message: "Room request failed" });
 }
 
 async function listRooms(req, res) {
   try {
-    const rooms = await Room.find().sort("building name");
+    const filter = {};
+    const pagination = readPagination(req, res);
+    if (pagination === false) return;
+    const rooms = await executeListQuery({ query: Room.find(filter).sort("building name"), Model: Room, filter, pagination, res });
     return res.json(rooms);
   } catch (error) {
     return sendRoomError(res, error);
@@ -75,13 +80,14 @@ async function inspectRoom(req, res) {
     return res.json(room);
   } catch (error) {
     if (error.name === "ValidationError") return res.status(400).json({ message: error.message });
-    console.error("Room inspection failed:", error.message);
+    console.error("Room inspection failed:", error.name || "Error");
     return res.status(500).json({ message: "Failed to save room inspection" });
   }
 }
 
 async function createRoom(req, res) {
   try {
+    if (!hasOnlyFields(req.body, allowedFields)) return res.status(400).json({ message: "Request contains unsupported fields." });
     const payload = roomPayload(req.body);
     const duplicate = await Room.findOne({ name: payload.name, building: payload.building })
       .collation({ locale: "en", strength: 2 });
@@ -97,6 +103,7 @@ async function createRoom(req, res) {
 async function updateRoom(req, res) {
   if (invalidId(req.params.id)) return res.status(400).json({ message: "Invalid room ID" });
   try {
+    if (!hasOnlyFields(req.body, allowedFields)) return res.status(400).json({ message: "Request contains unsupported fields." });
     const room = await Room.findById(req.params.id);
     if (!room) return res.status(404).json({ message: "Room not found" });
     const payload = roomPayload(req.body);

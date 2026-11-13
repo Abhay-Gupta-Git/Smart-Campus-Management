@@ -27,7 +27,7 @@ CampusOS is a role-aware campus management app using React, Vite, Tailwind CSS, 
    }
    ```
 
-   Set `MONGO_URI` to the intended database, replace `JWT_SECRET` with a long random value, and set `ADMIN_EMAIL` to the exact email address of the authorized administrator. Keep `.env` private and do not commit it.
+   Set `MONGO_URI` to the intended database, replace `JWT_SECRET` with a private random value of at least 32 bytes before production, and set `ADMIN_EMAIL` to the exact email address of the authorized administrator. For production, set `NODE_ENV=production`, configure the frontend origin(s) in `CLIENT_URL` using HTTPS, and set `TRUST_PROXY` only to the number of trusted reverse-proxy hops (normally `0` when directly exposed). Keep `.env` private and do not commit it. `.env.example` files contain placeholders only.
 
 3. Set `ADMIN_EMAIL` to the exact email address that will own the first administrator account. The first admin is created separately from public signup. From the project root, run:
 
@@ -80,10 +80,13 @@ The recovery script is an offline maintenance tool, not an HTTP endpoint. It sti
 - **Admin:** manage student and faculty accounts, classes, attendance, rooms, bookings, notices, and complaint records.
 - **Faculty:** see assigned classes and enrolled students, mark attendance only for those classes, create notices, and manage their own bookings.
 - **Student:** see their profile, enrolled classes and timetable, their own attendance and relevant notices, and submit/view their own complaints.
+- **Technician:** see assigned maintenance complaints and submit work progress and repair evidence for faculty verification.
 
-Public signup supports Student and Faculty roles. The backend accepts only those roles during signup; Administrator accounts are created through the one-time setup command. This project does not currently define a maintenance-staff role.
+Public signup creates Student accounts only. Faculty and Technician accounts are provisioned by an administrator; the first Administrator is created through the one-time setup command. Passwords must be at least 12 characters and no more than 72 UTF-8 bytes when created or changed.
 
-The server reloads the account role from MongoDB for each protected request. Frontend role display is refreshed from `/api/auth/profile`; a browser-stored role or a client-supplied JWT role does not grant privileges.
+The server reloads the account role from MongoDB for each protected request. JWTs are HS256, must include an unexpired `exp` claim, and use a one-day lifetime. Frontend role display is refreshed from `/api/auth/profile`; a browser-stored role or a client-supplied JWT role does not grant privileges. Login, registration, account mutations, booking requests, and complaint submissions have per-IP rate limits. The in-memory limits are per server process and should be replaced with a shared store when running multiple instances.
+
+The API restricts browser origins to `CLIENT_URL`, sends security headers, limits JSON bodies to 100 KB, and accepts explicit write fields rather than arbitrary request objects. In production, configure TLS at the edge and keep MongoDB network access restricted.
 
 ## Classes and timetable
 
@@ -106,6 +109,8 @@ Then sign in separately with an admin, faculty, and student account to review th
 
 ## API map
 
-All endpoints are prefixed with `/api`. Authentication: `/auth/register`, `/auth/login`, `/auth/profile`. Protected resources: `/students`, `/faculty`, `/classes`, `/attendance`, `/rooms`, `/bookings`, `/notices`, `/complaints`, and `/dashboard`. Protected requests use `Authorization: Bearer <token>`.
+All endpoints are prefixed with `/api`. Authentication: `/auth/register`, `/auth/login`, `/auth/profile`. Protected resources: `/students`, `/faculty`, `/classes`, `/attendance`, `/rooms`, `/bookings`, `/notices`, `/complaints`, `/notifications`, `/activity`, and `/dashboard`. Protected requests use `Authorization: Bearer <token>`.
+
+Collection endpoints accept optional `page` and `limit` query parameters (limit 1–100) and return the existing array response with `X-Total-Count`, `X-Page`, `X-Page-Size`, and `X-Total-Pages` headers. Omitting these parameters preserves the existing unpaginated response contract.
 
 MongoDB must be reachable before the backend starts. After the initial administrator is set up, create rooms and faculty accounts before creating classes. This project does not seed demo rooms or classes.

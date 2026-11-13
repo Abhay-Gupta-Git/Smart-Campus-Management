@@ -29,10 +29,14 @@ async function protect(req, res, next) {
       typeof decodedToken.id !== "string" || !mongoose.isValidObjectId(decodedToken.id)) {
       return res.status(401).json({ message: "Invalid or expired token." });
     }
-    const user = await User.findById(decodedToken.id).select("_id name email role studentId department").lean();
+    const user = await User.findById(decodedToken.id).select("_id name email role studentId department +tokenVersion").lean();
 
     if (!user) {
       return res.status(401).json({ message: "Account no longer exists" });
+    }
+    const tokenVersion = decodedToken.ver === undefined ? 0 : decodedToken.ver;
+    if (!Number.isSafeInteger(tokenVersion) || tokenVersion < 0 || tokenVersion !== (user.tokenVersion || 0)) {
+      return res.status(401).json({ message: "Session is no longer valid. Sign in again." });
     }
 
     const role = normalizeRole(user.role);
@@ -60,7 +64,7 @@ async function protect(req, res, next) {
       return res.status(401).json({ message: "Invalid or expired token" });
     }
 
-    console.error("Authentication lookup failed:", error.message);
+    console.error("Authentication lookup failed:", error.name || "Error");
     return res.status(500).json({ message: "Authentication check failed" });
   }
 }
