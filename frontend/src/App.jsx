@@ -1973,19 +1973,14 @@ function AuthenticationPage({ onLogin }) {
     event.preventDefault();
     setMessage("");
 
-    if (isRegistering && formValues.role === "admin") {
-      setMessage(
-        "Administrator accounts are initialized separately. Run npm run setup:admin --prefix backend from the project root.",
-      );
-      return;
-    }
-
     try {
       const action = isRegistering ? "register" : "login";
       const response = await fetch(`${API_URL}/auth/${action}`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(formValues),
+        body: JSON.stringify(isRegistering
+          ? { ...formValues, role: "student" }
+          : { email: formValues.email, password: formValues.password }),
       });
       const result = await response.json();
 
@@ -2056,29 +2051,17 @@ function AuthenticationPage({ onLogin }) {
           <input
             name="password"
             required
-            minLength="8"
+            minLength={isRegistering ? 12 : undefined}
+            maxLength="72"
             type="password"
-            placeholder="At least 8 characters"
+            placeholder={isRegistering ? "At least 12 characters" : "Your password"}
             onChange={updateField}
           />
         </label>
 
         {isRegistering && (
           <>
-            <label>
-              Role
-              <select name="role" defaultValue="student" onChange={updateField}>
-                <option value="student">Student</option>
-                <option value="faculty">Faculty</option>
-                <option value="admin">Administrator (one-time setup)</option>
-              </select>
-              {formValues.role === "admin" && (
-                <small>
-                  Administrator accounts are created with the secure backend
-                  setup command, not public signup.
-                </small>
-              )}
-            </label>
+            <small className="auth-role-note">Student accounts can self-register. Faculty, technician, and administrator accounts are provisioned by campus administrators.</small>
             <label>
               Department
               <input

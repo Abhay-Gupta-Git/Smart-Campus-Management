@@ -1,6 +1,8 @@
-const bcrypt = require("bcryptjs");
 const jwt = require("jsonwebtoken");
 const User = require("../models/User");
+const { hashPassword, verifyPassword, isAcceptablePassword, MIN_PASSWORD_LENGTH } = require("../utils/password");
+const { normalizeRole } = require("../utils/roles");
+const { isValidEmail, hasOnlyFields } = require("../utils/validation");
 
 function getPublicUser(user) {
   return {
@@ -14,7 +16,7 @@ function getPublicUser(user) {
 }
 
 function getRegistrationRole(requestedRole) {
-  const normalizedRole = normalizeRole(requestedRole);
+  const normalizedRole = normalizeRole(requestedRole || "student");
 
   if (normalizedRole === "admin") {
     const error = new Error(
@@ -24,66 +26,49 @@ function getRegistrationRole(requestedRole) {
     throw error;
   }
 
-  if (normalizedRole !== "student" && normalizedRole !== "faculty") {
-    const error = new Error("Select a supported account role");
-    error.status = 400;
+  if (normalizedRole !== "student") {
+    const error = new Error("Faculty, technician, and administrator accounts must be provisioned by an administrator.");
+    error.status = 403;
     throw error;
   }
 
   return normalizedRole;
 }
 
-function normalizeRole(role) {
-  const normalizedRole = String(role || "student")
-    .trim()
-    .toLowerCase();
-
-  if (normalizedRole === "admin" || normalizedRole === "administrator") {
-    return "admin";
-  }
-
-  if (normalizedRole === "faculty" || normalizedRole === "teacher") {
-    return "faculty";
-  }
-
-  if (normalizedRole === "student") {
-    return "student";
-  }
-
-  if (["technician", "tech team", "tech_team"].includes(normalizedRole)) {
-    return "technician";
-  }
-
-  return null;
-}
-
 async function register(req, res) {
   try {
-    const { name, email, password, studentId, department, role } = req.body;
+    const body = req.body || {};
+    if (!hasOnlyFields(body, ["name", "email", "password", "studentId", "department", "role"])) {
+      return res.status(400).json({ message: "Request contains unsupported fields." });
+    }
+    const { name, email, password, studentId, department, role } = body;
 
-    if (!name || !email || !password || password.length < 8) {
+    if (typeof name !== "string" || !name.trim() || name.trim().length > 120 || !isValidEmail(email) || !isAcceptablePassword(password)) {
       return res.status(400).json({
-        message:
-          "Name, email and password (at least 8 characters) are required",
+        message: `Provide a valid name, email, and password (${MIN_PASSWORD_LENGTH}+ characters, maximum 72 UTF-8 bytes).`,
       });
+    }
+    if ((studentId !== undefined && (typeof studentId !== "string" || studentId.length > 64)) ||
+      (department !== undefined && (typeof department !== "string" || department.length > 120))) {
+      return res.status(400).json({ message: "Student ID or department is invalid." });
     }
 
     const normalizedEmail = email.trim().toLowerCase();
+    const assignedRole = getRegistrationRole(role);
     const existingUser = await User.findOne({ email: normalizedEmail });
 
     if (existingUser) {
       return res.status(409).json({ message: "Email already registered" });
     }
 
-    const assignedRole = getRegistrationRole(role);
-    const hashedPassword = await bcrypt.hash(password, 10);
+    const hashedPassword = await hashPassword(password);
     const user = await User.create({
       name: name.trim(),
       email: normalizedEmail,
       password: hashedPassword,
       role: assignedRole,
-      studentId,
-      department,
+      studentId: studentId?.trim() || undefined,
+      department: department?.trim() || undefined,
     });
 
     return res.status(201).json({
@@ -106,11 +91,15 @@ async function register(req, res) {
 
 async function login(req, res) {
   try {
-    const { email, password } = req.body;
+    const body = req.body || {};
+    if (!hasOnlyFields(body, ["email", "password"])) {
+      return res.status(400).json({ message: "Request contains unsupported fields." });
+    }
+    const { email, password } = body;
 
-    if (!email || !password) {
+    if (!isValidEmail(email) || typeof password !== "string" || !password.length || Buffer.byteLength(password, "utf8") > 72) {
       return res.status(400).json({
-        message: "Email and password are required",
+        message: "A valid email and password of at most 72 UTF-8 bytes are required.",
       });
     }
 
@@ -127,7 +116,7 @@ async function login(req, res) {
       return res.status(401).json({ message: "Invalid email or password" });
     }
 
-    const passwordMatches = await bcrypt.compare(password, user.password);
+    const passwordMatches = await verifyPassword(password, user.password);
 
     if (!passwordMatches) {
       return res.status(401).json({ message: "Invalid email or password" });
@@ -142,15 +131,10 @@ async function login(req, res) {
       });
     }
 
-    if (user.role !== currentRole) {
-      user.role = currentRole;
-      await user.save();
-    }
-
     const token = jwt.sign(
       { id: user._id.toString() },
       process.env.JWT_SECRET,
-      { expiresIn: "1d" },
+      { algorithm: "HS256", expiresIn: "1d" },
     );
 
     return res.json({

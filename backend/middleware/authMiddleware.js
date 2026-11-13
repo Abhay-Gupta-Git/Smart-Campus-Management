@@ -1,29 +1,7 @@
 const jwt = require("jsonwebtoken");
+const mongoose = require("mongoose");
 const User = require("../models/User");
-
-function normalizeRole(role) {
-  const normalizedRole = String(role || "")
-    .trim()
-    .toLowerCase();
-
-  if (normalizedRole === "admin" || normalizedRole === "administrator") {
-    return "admin";
-  }
-
-  if (normalizedRole === "faculty" || normalizedRole === "teacher") {
-    return "faculty";
-  }
-
-  if (normalizedRole === "student") {
-    return "student";
-  }
-
-  if (["technician", "tech team", "tech_team"].includes(normalizedRole)) {
-    return "technician";
-  }
-
-  return null;
-}
+const { normalizeRole } = require("../utils/roles");
 
 async function protect(req, res, next) {
   if (!process.env.JWT_SECRET) {
@@ -34,15 +12,24 @@ async function protect(req, res, next) {
 
   const authorizationHeader = req.headers.authorization;
 
-  if (!authorizationHeader || !authorizationHeader.startsWith("Bearer ")) {
+  const authorization = typeof authorizationHeader === "string"
+    ? authorizationHeader.match(/^Bearer ([^\s]+)$/i)
+    : null;
+  if (!authorization) {
     return res.status(401).json({ message: "Access denied. Token required." });
   }
 
-  const token = authorizationHeader.split(" ")[1];
+  const token = authorization[1];
 
   try {
-    const decodedToken = jwt.verify(token, process.env.JWT_SECRET);
-    const user = await User.findById(decodedToken.id);
+    const decodedToken = jwt.verify(token, process.env.JWT_SECRET, { algorithms: ["HS256"] });
+    const now = Math.floor(Date.now() / 1000);
+    if (typeof decodedToken.exp !== "number" || decodedToken.exp <= now ||
+      (decodedToken.iat !== undefined && decodedToken.iat > now + 60) ||
+      typeof decodedToken.id !== "string" || !mongoose.isValidObjectId(decodedToken.id)) {
+      return res.status(401).json({ message: "Invalid or expired token." });
+    }
+    const user = await User.findById(decodedToken.id).select("_id name email role studentId department").lean();
 
     if (!user) {
       return res.status(401).json({ message: "Account no longer exists" });
@@ -54,11 +41,6 @@ async function protect(req, res, next) {
       return res
         .status(403)
         .json({ message: "Account role is not recognized" });
-    }
-
-    if (user.role !== role) {
-      user.role = role;
-      await user.save();
     }
 
     req.user = {

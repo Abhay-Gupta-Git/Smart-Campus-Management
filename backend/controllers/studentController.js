@@ -1,11 +1,20 @@
-const bcrypt = require("bcryptjs");
 const User = require("../models/User");
+const { hashPassword, isAcceptablePassword, MIN_PASSWORD_LENGTH } = require("../utils/password");
+const { isValidEmail, hasOnlyFields } = require("../utils/validation");
+const CampusClass = require("../models/CampusClass");
 
 async function listStudents(req, res) {
   try {
-    const students = await User.find({ role: "student" })
-      .select("-password")
-      .sort("name");
+    let studentFilter = { role: "student" };
+    if (req.user.role === "faculty") {
+      const assignedClasses = await CampusClass.find({ faculty: req.user.id }).select("enrolledStudents").lean();
+      const enrolledIds = [...new Set(assignedClasses.flatMap((item) => item.enrolledStudents.map(String)))];
+      studentFilter._id = { $in: enrolledIds };
+    }
+    const selectFields = req.user.role === "admin"
+      ? "name email role studentId department createdAt"
+      : "name studentId department";
+    const students = await User.find(studentFilter).select(selectFields).sort("name").lean();
 
     return res.json(students);
   } catch (error) {
@@ -15,22 +24,24 @@ async function listStudents(req, res) {
 
 async function createStudent(req, res) {
   try {
-    const { name, email, password, studentId, department, phone } = req.body;
+    const body = req.body || {};
+    if (!hasOnlyFields(body, ["name", "email", "password", "studentId", "department", "phone"])) return res.status(400).json({ message: "Request contains unsupported fields." });
+    const { name, email, password, studentId, department, phone } = body;
 
-    if (!name || !email || !password || password.length < 8) {
+    if (typeof name !== "string" || !name.trim() || name.trim().length > 120 || !isValidEmail(email) || !isAcceptablePassword(password)) {
       return res.status(400).json({
-        message:
-          "Name, email and password (at least 8 characters) are required",
+        message: `Provide a valid name, email, and password (${MIN_PASSWORD_LENGTH}+ characters, maximum 72 UTF-8 bytes).`,
       });
     }
+    if ((studentId !== undefined && (typeof studentId !== "string" || studentId.length > 64)) || (department !== undefined && (typeof department !== "string" || department.length > 120)) || (phone !== undefined && (typeof phone !== "string" || phone.length > 30))) return res.status(400).json({ message: "Student profile fields are invalid." });
 
     const student = await User.create({
       name: name.trim(),
       email: email.trim().toLowerCase(),
-      password: await bcrypt.hash(password, 10),
-      studentId,
-      department,
-      phone,
+      password: await hashPassword(password),
+      studentId: studentId?.trim() || null,
+      department: department?.trim() || null,
+      phone: phone?.trim() || "",
       role: "student",
     });
     const safeStudent = student.toObject();
@@ -48,37 +59,44 @@ async function createStudent(req, res) {
 
 async function updateStudent(req, res) {
   try {
-    const { name, email, studentId, department, phone, password } = req.body;
+    const body = req.body || {};
+    if (!hasOnlyFields(body, ["name", "email", "studentId", "department", "phone", "password"])) return res.status(400).json({ message: "Request contains unsupported fields." });
+    const { name, email, studentId, department, phone, password } = body;
     const updates = {};
 
     if (name !== undefined) {
-      updates.name = name;
+      if (typeof name !== "string" || !name.trim() || name.trim().length > 120) return res.status(400).json({ message: "Name is invalid." });
+      updates.name = name.trim();
     }
 
     if (email !== undefined) {
+      if (!isValidEmail(email)) return res.status(400).json({ message: "Email is invalid." });
       updates.email = email.trim().toLowerCase();
     }
 
     if (studentId !== undefined) {
-      updates.studentId = studentId;
+      if (typeof studentId !== "string" || studentId.length > 64) return res.status(400).json({ message: "Student ID is invalid." });
+      updates.studentId = studentId.trim();
     }
 
     if (department !== undefined) {
-      updates.department = department;
+      if (typeof department !== "string" || department.length > 120) return res.status(400).json({ message: "Department is invalid." });
+      updates.department = department.trim();
     }
 
     if (phone !== undefined) {
-      updates.phone = phone;
+      if (typeof phone !== "string" || phone.length > 30) return res.status(400).json({ message: "Phone is invalid." });
+      updates.phone = phone.trim();
     }
 
     if (password !== undefined) {
-      if (typeof password !== "string" || password.length < 8) {
+      if (!isAcceptablePassword(password)) {
         return res.status(400).json({
-          message: "Password must be at least 8 characters",
+          message: `Password must be ${MIN_PASSWORD_LENGTH}+ characters and no more than 72 UTF-8 bytes.`,
         });
       }
 
-      updates.password = await bcrypt.hash(password, 10);
+      updates.password = await hashPassword(password);
     }
 
     const student = await User.findOneAndUpdate(
