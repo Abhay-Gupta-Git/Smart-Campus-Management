@@ -107,12 +107,13 @@ async function saveInitialAdmin({ configuredEmail, adminName, password }) {
   }
 
   const hashedPassword = await bcrypt.hash(password, 12);
-  const existingAccount = await User.findOne({ email: configuredEmail });
+  const existingAccount = await User.findOne({ email: configuredEmail }).select("+tokenVersion");
 
   if (existingAccount) {
     existingAccount.name = adminName || existingAccount.name;
     existingAccount.role = "admin";
     existingAccount.password = hashedPassword;
+    existingAccount.tokenVersion = (existingAccount.tokenVersion || 0) + 1;
     await existingAccount.save();
     return;
   }
@@ -197,7 +198,8 @@ async function initializeFirstAdmin() {
 if (require.main === module) {
   initializeFirstAdmin()
     .catch((error) => {
-      console.error(`Initial admin setup failed: ${error.message}`);
+      const message = error.name === "Error" ? error.message : "Database or setup service unavailable.";
+      console.error(`Initial administrator setup failed: ${message}`);
       process.exitCode = 1;
     })
     .finally(async () => {

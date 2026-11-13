@@ -69,8 +69,12 @@ async function provisionConfiguredAdmin(req, res) {
         });
       }
 
-      existingUser.role = "admin";
-      await existingUser.save({ timestamps: false });
+      const promotion = await User.updateOne(
+        { _id: existingUser._id, role: existingUser.role },
+        { $set: { role: "admin" }, $inc: { tokenVersion: 1 } },
+        { timestamps: false, runValidators: true },
+      );
+      if (!promotion.modifiedCount) return res.status(409).json({ message: "The configured account changed while it was being promoted. Retry the request." });
 
       return res.status(200).json({
         message: "The configured account was promoted to administrator.",

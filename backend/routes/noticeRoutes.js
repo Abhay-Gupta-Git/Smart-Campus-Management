@@ -19,7 +19,8 @@ router.get("/", async (req, res) => {
     if (pagination === false) return;
     const notices = await executeListQuery({ query: Notice.find(filter)
       .populate("author", "name")
-      .sort("-createdAt"), Model: Notice, filter, pagination, res });
+      .sort("-createdAt")
+      .lean(), Model: Notice, filter, pagination, res });
 
     return res.json(notices);
   } catch (error) {

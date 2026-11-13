@@ -1,4 +1,4 @@
-﻿import React, { useEffect, useState } from "react";
+import React, { useEffect, useRef, useState } from "react";
 import {
   AlertCircle,
   ArrowUpRight,
@@ -332,6 +332,7 @@ function App() {
                   setSuccessMessage("Complaint marked as resolved.");
                 } catch (error) {
                   setErrorMessage(error.message);
+                  throw error;
                 }
               }}
               onBookingDecision={async (record, status) => {
@@ -363,7 +364,7 @@ function App() {
                   });
                   await loadRecords(page);
                   setSuccessMessage("Maintenance assignment updated.");
-                } catch (error) { setErrorMessage(error.message); }
+                } catch (error) { setErrorMessage(error.message); throw error; }
               }}
               onUpdateWork={async (record, values) => {
                 try {
@@ -504,6 +505,19 @@ function Sidebar({ activePage, dashboard, user, onNavigate, onLogout, isOpen, on
 }
 
 function TopBar({ page, user, token, searchText, onSearch, onMenu }) {
+  const searchInput = useRef(null);
+
+  useEffect(() => {
+    function focusSearch(event) {
+      if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "k") {
+        event.preventDefault();
+        searchInput.current?.focus();
+      }
+    }
+    window.addEventListener("keydown", focusSearch);
+    return () => window.removeEventListener("keydown", focusSearch);
+  }, []);
+
   return (
     <header>
       <div className="crumb">
@@ -515,7 +529,8 @@ function TopBar({ page, user, token, searchText, onSearch, onMenu }) {
         <div className="search">
           <Search size={16} />
           <input
-            placeholder="Search anything..."
+            ref={searchInput}
+            placeholder={`Search ${page.toLowerCase()}...`}
             value={searchText}
             onChange={(event) => onSearch(event.target.value)}
           />
@@ -533,6 +548,8 @@ function NotificationBell({ token }) {
   const [isOpen, setIsOpen] = useState(false);
   const [unreadCount, setUnreadCount] = useState(0);
   const [loading, setLoading] = useState(false);
+  const [readingId, setReadingId] = useState("");
+  const [markingAllRead, setMarkingAllRead] = useState(false);
 
   async function loadUnreadCount() {
     try {
@@ -561,20 +578,25 @@ function NotificationBell({ token }) {
   }
 
   async function markRead(notification) {
-    if (notification.readAt) return;
+    if (notification.readAt || readingId === notification._id) return;
+    setReadingId(notification._id);
     try {
       await requestApi(`/notifications/${notification._id}/read`, token, { method: "PATCH" });
       setNotifications((items) => items.map((item) => item._id === notification._id ? { ...item, readAt: new Date().toISOString() } : item));
       setUnreadCount((count) => Math.max(0, count - 1));
     } catch { /* The notification can still be read in the list. */ }
+    finally { setReadingId(""); }
   }
 
   async function markAllRead() {
+    if (markingAllRead) return;
+    setMarkingAllRead(true);
     try {
       await requestApi("/notifications/read-all", token, { method: "PATCH" });
       setNotifications((items) => items.map((item) => ({ ...item, readAt: item.readAt || new Date().toISOString() })));
       setUnreadCount(0);
     } catch { /* Leave current notification state visible on request failure. */ }
+    finally { setMarkingAllRead(false); }
   }
 
   return (
@@ -584,9 +606,9 @@ function NotificationBell({ token }) {
       </button>
       {isOpen && (
         <div className="notification-popover">
-          <div className="notification-popover-head"><strong>Notifications</strong><span>{unreadCount} unread</span>{unreadCount > 0 && <button onClick={markAllRead}>Mark all read</button>}</div>
+          <div className="notification-popover-head"><strong>Notifications</strong><span>{unreadCount} unread</span>{unreadCount > 0 && <button disabled={markingAllRead} onClick={markAllRead}>{markingAllRead ? "Saving…" : "Mark all read"}</button>}</div>
           {loading ? <div className="notification-empty">Loading notifications…</div> : notifications.length ? notifications.map((notification) => (
-            <button className={`notification-item ${notification.readAt ? "read" : "unread"}`} key={notification._id} onClick={() => markRead(notification)}>
+            <button className={`notification-item ${notification.readAt ? "read" : "unread"}`} key={notification._id} disabled={readingId === notification._id} onClick={() => markRead(notification)}>
               <strong>{notification.title}</strong>
               <span>{notification.message}</span>
               <small>{new Date(notification.createdAt).toLocaleString()}</small>
@@ -599,9 +621,11 @@ function NotificationBell({ token }) {
 }
 
 function PageHeading({ page, user, canCreateRecord, onCreate }) {
+  const hour = new Date().getHours();
+  const greeting = hour < 12 ? "Good morning" : hour < 18 ? "Good afternoon" : "Good evening";
   const title =
     page === "Overview"
-      ? `Good morning, ${user?.name?.split(" ")[0] || "there"}`
+      ? `${greeting}, ${user?.name?.split(" ")[0] || "there"}`
       : page;
   const description =
     page === "Overview"
@@ -1566,6 +1590,24 @@ function MaintenanceRow({ record, userRole, canEdit, technicians, onResolve, onA
     finally { setSaving(false); }
   }
 
+  async function assignTechnician(technicianId) {
+    if (saving) return;
+    setSaving(true);
+    setActionError("");
+    try { await onAssign(record, technicianId); }
+    catch (error) { setActionError(error.message); }
+    finally { setSaving(false); }
+  }
+
+  async function resolveGeneralComplaint() {
+    if (saving) return;
+    setSaving(true);
+    setActionError("");
+    try { await onResolve(record); }
+    catch (error) { setActionError(error.message); }
+    finally { setSaving(false); }
+  }
+
   const history = record.history || [];
   return (
     <tr className="maintenance-row">
@@ -1576,7 +1618,7 @@ function MaintenanceRow({ record, userRole, canEdit, technicians, onResolve, onA
       <td>{record.submittedBy?.name || "—"}</td>
       <td>
         {canEdit && isFacility ? (
-          <select aria-label={`Assign ${record.title}`} disabled={["Closed", "Resolved"].includes(record.status)} value={record.assignedTo?._id || ""} onChange={(event) => onAssign(record, event.target.value)}>
+          <select aria-label={`Assign ${record.title}`} disabled={saving || ["Closed", "Resolved"].includes(record.status)} value={record.assignedTo?._id || ""} onChange={(event) => assignTechnician(event.target.value)}>
             <option value="">Unassigned</option>
             {technicians.map((technician) => <option key={technician.id} value={technician.id}>{technician.name}</option>)}
           </select>
@@ -1618,7 +1660,7 @@ function MaintenanceRow({ record, userRole, canEdit, technicians, onResolve, onA
             <button className="table-action danger" disabled={saving} onClick={() => verify("reject")}>Reject</button>
           </div>
         )}
-        {canEdit && !isFacility && record.status !== "Resolved" && <button className="table-action" onClick={() => onResolve(record)}>Mark resolved</button>}
+        {canEdit && !isFacility && record.status !== "Resolved" && <button className="table-action" disabled={saving} onClick={resolveGeneralComplaint}>{saving ? "Saving…" : "Mark resolved"}</button>}
         {actionError && <small className="inline-action-error">{actionError}</small>}
       </td>
     </tr>

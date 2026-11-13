@@ -78,7 +78,7 @@ async function listComplaints(req, res) {
     const filter = filterParts.length === 1 ? filterParts[0] : { $and: filterParts };
     const pagination = readPagination(req, res);
     if (pagination === false) return;
-    const complaints = await executeListQuery({ query: populatedComplaints(Complaint.find(filter).sort("-createdAt")), Model: Complaint, filter, pagination, res });
+    const complaints = await executeListQuery({ query: populatedComplaints(Complaint.find(filter).sort("-createdAt")).lean(), Model: Complaint, filter, pagination, res });
     return res.json(complaints);
   } catch (error) {
     console.error("List complaints failed:", error.name || "Error");

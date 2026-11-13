@@ -31,7 +31,8 @@ async function listAttendance(req, res) {
     const records = await executeListQuery({ query: Attendance.find(filter)
       .populate("student", "name studentId department")
       .populate("campusClass", "courseName courseCode section")
-      .sort("-date"), Model: Attendance, filter, pagination, res });
+      .sort("-date")
+      .lean(), Model: Attendance, filter, pagination, res });
 
     return res.json(records);
   } catch (error) {

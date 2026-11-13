@@ -243,7 +243,7 @@ async function recoverConfiguredAdmin() {
           email: targetAdminEmail,
           role: existingAccount.role,
         },
-        { $set: { role: "admin" } },
+        { $set: { role: "admin" }, $inc: { tokenVersion: 1 } },
         { runValidators: true, timestamps: false },
       );
 
