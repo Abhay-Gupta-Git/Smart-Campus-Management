@@ -6,7 +6,8 @@ const { readPagination, readSearch, readSort, escapeRegex, executeListQuery } = 
 const CampusClass = require("../models/CampusClass");
 const Booking = require("../models/Booking");
 const Complaint = require("../models/Complaint");
-const { runTransaction, isTransactionUnsupported } = require("../utils/transactions");
+const { runTransaction, isTransactionUnsupported, lockRoomReference } = require("../utils/transactions");
+const { recomputeRoomMaintenanceState } = require("../services/roomMaintenanceService");
 
 const allowedFields = ["name", "building", "floor", "capacity", "type", "available", "facilities"];
 
@@ -114,25 +115,52 @@ async function inspectRoom(req, res) {
     return res.status(400).json({ message: "Submit one condition for each fan, AC, projector, and light." });
   }
   try {
-    const room = await Room.findById(req.params.id).select("+inspectionHistory");
-    if (!room) return res.status(404).json({ message: "Room not found" });
-    const inspectedAt = new Date();
-    const inspectedEquipment = equipment.map((item) => ({
-      type: item.type,
-      status: item.status,
-      note: item.note?.trim() || "",
-      inspectedBy: req.user.id,
-      inspectedAt,
-    }));
-    room.inspectionHistory.push({ equipment: inspectedEquipment, recordedAt: inspectedAt });
-    room.equipment = inspectedEquipment;
-    await room.save();
+    const result = await runTransaction(async (session) => {
+      if (!await lockRoomReference(Room, req.params.id, session)) return null;
+      const room = await Room.findById(req.params.id).select("+inspectionHistory").session(session);
+      if (!room) return null;
+      const inspectedAt = new Date();
+      const inspectedEquipment = equipment.map((item) => ({
+        type: item.type,
+        status: item.status,
+        note: item.note?.trim() || "",
+        inspectedBy: req.user.id,
+        inspectedAt,
+      }));
+      room.inspectionHistory.push({ equipment: inspectedEquipment, recordedAt: inspectedAt });
+      room.equipment = inspectedEquipment;
+      await room.save({ session });
+      const maintenance = await recomputeRoomMaintenanceState(room._id, { session, roomAlreadyLocked: true });
+      return maintenance?.room || null;
+    });
+    if (!result) return res.status(404).json({ message: "Room not found" });
+    const room = result;
     await recordActivity({ actor: req.user.id, action: "Room inspected", entityType: "room", entityId: room._id, summary: `Facility inspection recorded for ${room.name} in ${room.building}.` });
     return res.json(room);
   } catch (error) {
+    if (isTransactionUnsupported(error)) return res.status(503).json({ message: "Room inspection requires MongoDB transaction support. Configure MongoDB as a replica set and retry." });
     if (error.name === "ValidationError") return res.status(400).json({ message: error.message });
-    console.error("Room inspection failed:", error.name || "Error");
+    console.error("Room inspection failed:", JSON.stringify({ event: "room_inspection_failed", roomId: req.params.id, actorId: req.user.id, error: error.name || "Error", code: error.code || "unknown" }));
     return res.status(500).json({ message: "Failed to save room inspection" });
+  }
+}
+
+async function recomputeMaintenance(req, res) {
+  if (invalidId(req.params.id)) return res.status(400).json({ message: "Invalid room ID" });
+  try {
+    const result = await recomputeRoomMaintenanceState(req.params.id);
+    if (!result) return res.status(404).json({ message: "Room not found" });
+    await recordActivity({ actor: req.user.id, action: "Room maintenance state recomputed", entityType: "room", entityId: result.room._id, summary: `Recomputed maintenance state for ${result.room.name} in ${result.room.building}.` });
+    return res.json({
+      room: result.room,
+      maintenanceHold: result.maintenanceHold,
+      unresolvedComplaintCount: result.unresolvedComplaintCount,
+      faultyEquipment: result.faultyEquipment,
+    });
+  } catch (error) {
+    console.error("Room maintenance recovery failed:", JSON.stringify({ event: "room_maintenance_recompute_failed", roomId: req.params.id, actorId: req.user.id, error: error.name || "Error", code: error.code || "unknown" }));
+    if (isTransactionUnsupported(error)) return res.status(503).json({ message: "Maintenance state recovery requires MongoDB transaction support. Configure MongoDB as a replica set and retry." });
+    return res.status(500).json({ message: "Failed to recompute room maintenance state." });
   }
 }
 
@@ -209,4 +237,4 @@ async function deleteRoom(req, res) {
   }
 }
 
-module.exports = { listRooms, getRoom, inspectRoom, createRoom, updateRoom, deleteRoom };
+module.exports = { listRooms, getRoom, inspectRoom, recomputeMaintenance, createRoom, updateRoom, deleteRoom };

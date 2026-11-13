@@ -7,6 +7,7 @@ const { createNotifications } = require("../utils/notifications");
 const { readPagination, readSearch, readSort, escapeRegex, executeListQuery } = require("../utils/pagination");
 const { hasOnlyFields } = require("../utils/validation");
 const { runTransaction, isTransactionUnsupported, lockRoomReference } = require("../utils/transactions");
+const { recomputeRoomMaintenanceState } = require("../services/roomMaintenanceService");
 
 const equipmentTypes = ["Fan", "AC", "Projector", "Light"];
 const priorities = ["Low", "Normal", "High", "Urgent"];
@@ -275,64 +276,64 @@ async function verifyRepair(req, res) {
   if (!["accept", "reject"].includes(decision)) return res.status(400).json({ message: "Decision must be accept or reject." });
   if (typeof note !== "string" || note.trim().length > 2000 || (decision === "reject" && !note.trim())) return res.status(400).json({ message: "Provide a rejection reason of up to 2,000 characters." });
   try {
-    const complaint = await Complaint.findById(id);
-    if (!complaint || !complaint.room) return res.status(404).json({ message: "Facility complaint not found." });
-    if (complaint.status !== "Pending Verification") return res.status(409).json({ message: "This repair is not awaiting verification." });
-    if (complaint.assignedTo?.toString() === req.user.id) return res.status(403).json({ message: "You cannot verify your own repair work." });
-    const oldStatus = complaint.status;
-    complaint.status = decision === "accept" ? "Closed" : "In progress";
-    complaint.verifiedBy = req.user.id;
-    complaint.verifiedAt = new Date();
-    complaint.verificationNote = note.trim();
-    complaint.history.push({
-      actor: req.user.id,
-      action: decision === "accept" ? "Repair accepted; complaint closed" : "Repair rejected; returned to technician",
-      note: note.trim(),
-      fromStatus: oldStatus,
-      toStatus: complaint.status,
+    const result = await runTransaction(async (session) => {
+      const existing = await Complaint.findById(id).select("room").session(session);
+      if (!existing || !existing.room) return { status: 404, message: "Facility complaint not found." };
+      if (!await lockRoomReference(Room, existing.room, session)) return { status: 404, message: "Room not found." };
+
+      const complaint = await Complaint.findById(id).session(session);
+      if (!complaint || !complaint.room) return { status: 404, message: "Facility complaint not found." };
+      if (complaint.status !== "Pending Verification") return { status: 409, message: "This repair is not awaiting verification." };
+      if (complaint.assignedTo?.toString() === req.user.id) return { status: 403, message: "You cannot verify your own repair work." };
+
+      const oldStatus = complaint.status;
+      complaint.status = decision === "accept" ? "Closed" : "In progress";
+      complaint.verifiedBy = req.user.id;
+      complaint.verifiedAt = new Date();
+      complaint.verificationNote = note.trim();
+      complaint.history.push({
+        actor: req.user.id,
+        action: decision === "accept" ? "Repair accepted; complaint closed" : "Repair rejected; returned to technician",
+        note: note.trim(),
+        fromStatus: oldStatus,
+        toStatus: complaint.status,
+      });
+      await complaint.save({ session });
+
+      if (decision === "accept") {
+        const otherEquipmentFault = await Complaint.exists({
+          _id: { $ne: complaint._id },
+          room: complaint.room,
+          equipment: complaint.equipment,
+          status: { $ne: "Closed" },
+        }).session(session);
+        if (!otherEquipmentFault) {
+          const room = await Room.findById(complaint.room).session(session);
+          if (!room) return { status: 404, message: "Room not found." };
+          const inspectedAt = new Date();
+          const item = room.equipment.find((entry) => entry.type === complaint.equipment);
+          const verifiedCondition = { status: "Working", note: "Repair accepted by faculty", inspectedBy: req.user.id, inspectedAt };
+          if (item) Object.assign(item, verifiedCondition);
+          else room.equipment.push({ type: complaint.equipment, ...verifiedCondition });
+          await room.save({ session });
+        }
+      }
+
+      const maintenance = await recomputeRoomMaintenanceState(complaint.room, { session, roomAlreadyLocked: true });
+      if (!maintenance) return { status: 404, message: "Room not found." };
+      return { status: 200, complaint };
     });
-    await complaint.save();
+    if (result.status !== 200) return res.status(result.status).json({ message: result.message });
+    const complaint = result.complaint;
     await recordActivity({ actor: req.user.id, action: decision === "accept" ? "Repair accepted" : "Repair rejected", entityType: "complaint", entityId: complaint._id, summary: `${complaint.title} was ${decision === "accept" ? "accepted and closed" : "returned for more work"}.` });
     const label = await getRoomLabel(complaint.room);
-    if (decision === "accept") await refreshRoomMaintenance(complaint);
     const recipients = [complaint.assignedTo, complaint.submittedBy];
     await notifyUsers(recipients, complaint, decision === "accept" ? "Repair verified" : "Repair verification rejected", decision === "accept" ? `${complaint.equipment} repair for ${label} was accepted and the issue is closed.` : `${complaint.equipment} repair for ${label} was rejected and returned for more work.`, `complaint-history:${complaint.history.at(-1)._id}`);
     return res.json(await populatedComplaints(Complaint.findById(complaint._id)));
   } catch (error) {
-    console.error("Repair verification failed:", error.name || "Error");
+    console.error("Repair verification failed:", JSON.stringify({ event: "repair_verification_failed", complaintId: id, actorId: req.user.id, error: error.name || "Error", code: error.code || "unknown" }));
+    if (isTransactionUnsupported(error)) return res.status(503).json({ message: "Repair verification requires MongoDB transaction support. Configure MongoDB as a replica set and retry." });
     return res.status(500).json({ message: "Failed to verify repair." });
-  }
-}
-
-async function refreshRoomMaintenance(closedComplaint) {
-  try {
-    const room = await Room.findById(closedComplaint.room);
-    if (!room) return;
-    const otherFaultForEquipment = await Complaint.exists({
-      _id: { $ne: closedComplaint._id },
-      room: closedComplaint.room,
-      equipment: closedComplaint.equipment,
-      status: { $in: ["Open", "In progress", "Pending Verification"] },
-    });
-    if (!otherFaultForEquipment) {
-      const item = room.equipment.find((entry) => entry.type === closedComplaint.equipment);
-      const inspectedAt = new Date();
-      if (item) {
-        item.status = "Working";
-        item.note = "Repair accepted by faculty";
-        item.inspectedBy = closedComplaint.verifiedBy;
-        item.inspectedAt = inspectedAt;
-      } else {
-        room.equipment.push({ type: closedComplaint.equipment, status: "Working", note: "Repair accepted by faculty", inspectedBy: closedComplaint.verifiedBy, inspectedAt });
-      }
-    }
-    room.maintenanceHold = Boolean(await Complaint.exists({
-      room: closedComplaint.room,
-      status: { $in: ["Open", "In progress", "Pending Verification"] },
-    }));
-    await room.save();
-  } catch (error) {
-    console.error("Room maintenance status refresh failed:", error.name || "Error");
   }
 }
 

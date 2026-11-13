@@ -7,6 +7,7 @@ const router = express.Router();
 
 router.use(protect);
 router.get("/recommendations", recommendRooms);
+router.post("/:id/maintenance/recompute", authorizeRoles("admin"), roomController.recomputeMaintenance);
 router.patch("/:id/inspection", authorizeRoles("admin", "faculty", "technician"), roomController.inspectRoom);
 router.get("/", roomController.listRooms);
 router.get("/:id", roomController.getRoom);

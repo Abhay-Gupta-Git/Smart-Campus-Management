@@ -77,6 +77,18 @@ Use this separate recovery command only when the existing administrator cannot s
 
 The recovery script is an offline maintenance tool, not an HTTP endpoint. It still requires access to the local MongoDB database and an interactive local terminal. A user with control of that computer and database can bypass application-level recovery controls; secure the machine and database credentials accordingly.
 
+## Production deployment
+
+CampusOS does not serve the built frontend from Express. Deploy the API and frontend as separate services:
+
+1. Install reproducibly from the committed lockfiles with `npm ci --prefix backend` and `npm ci --prefix frontend`. If you use the root `npm run dev` launcher, also run `npm ci` at the root.
+2. Supply backend configuration through the deployment secret/configuration manager. Set `NODE_ENV=production`, a private random `JWT_SECRET` of at least 32 bytes, `MONGO_URI` for a replica set or sharded cluster, `ADMIN_EMAIL`, `PORT`, the exact HTTPS frontend origin(s) in `CLIENT_URL`, and `TRUST_PROXY` to the actual trusted proxy hop count. Do not copy secrets into frontend variables.
+3. Build with `npm run build --prefix frontend`. Set `VITE_API_URL` to the public API base ending in `/api` and optionally set `VITE_INSTITUTION_NAME` before building. These Vite values are public and become part of the static bundle.
+4. Publish `frontend/dist` to an HTTPS static host/CDN with single-page-app fallback routing to `index.html`. Configure the static host's security headers separately from the API; the styles currently load Google Fonts from `fonts.googleapis.com` and `fonts.gstatic.com`, so a frontend Content Security Policy must account for those origins or the font import should be self-hosted. Start the API with `npm start --prefix backend`. Configure TLS at a trusted edge and restrict database network access to the API host.
+5. Use `GET /api/health` as a readiness check. Ensure the MongoDB replica set has a reachable primary before enabling transaction-backed workflows. The configured in-memory rate limits are per process; horizontally scaled deployments need a shared rate-limit store.
+
+`npm ci` uses the committed package lockfiles. The repository does not include deployment manifests, a shared rate-limit store, or infrastructure provisioning; supply those for the chosen hosting platform. No live infrastructure is changed by these instructions.
+
 ## Roles and access
 
 - **Admin:** manage student and faculty accounts, classes, attendance, rooms, bookings, notices, and complaint records.
@@ -93,6 +105,27 @@ The API restricts browser origins to `CLIENT_URL`, sends security headers, limit
 ## Classes and timetable
 
 Administrators create classes from the Classes page. A class requires a subject name, course code, section, existing faculty account, room, weekday, start/end times, and maximum enrollment. Students can be enrolled when creating or editing a class. The API checks the selected records, prevents duplicate course-code/section pairs, rejects overlapping room or faculty schedules, and stores classes in MongoDB. Students see only enrolled classes; faculty see only their assignments.
+
+## Local demo dataset
+
+The opt-in demo seeder creates fictional CampusOS records for presentations and workflow testing. It adds 5 building labels as room strings (there is no Building collection), 20 rooms, 130 students, 9 faculty, 3 technicians, 1 demo administrator, 10 classes, 40 bookings, 390 attendance rows, 18 maintenance complaints, room inspection snapshots, 4 notifications, 38 activity entries, and 5 notices. The script uses the existing schemas, role/status enums, and password hashing helper.
+
+The seeder is never run by application startup. First install backend dependencies and, in a dedicated local MongoDB instance, prepare a database whose name contains `demo` or `test`. The seed uses transactions, so configure that local instance as a replica set using the instructions above. Run the existing integrity-index migration against the **same database** selected by `DEMO_MONGO_URI`; the migration reads `MONGO_URI`, so set it to that same URI for the command. `DEMO_MONGO_URI` must use a loopback host (`localhost`, `127.0.0.1`, or `::1`) and a database name containing `demo` or `test`; the seeder refuses production mode, remote hosts, and other database names. Do not point either URI at a shared or production database.
+
+```powershell
+$env:DEMO_MONGO_URI = "mongodb://127.0.0.1:27017/campusos_demo?replicaSet=rs0"
+$env:MONGO_URI = $env:DEMO_MONGO_URI
+$env:ALLOW_DEMO_SEED = "true"
+npm run migrate:integrity-indexes --prefix backend
+npm run seed:demo --prefix backend
+Remove-Item Env:MONGO_URI
+Remove-Item Env:DEMO_MONGO_URI
+Remove-Item Env:ALLOW_DEMO_SEED
+```
+
+The fictional login emails are `admin.demo@campusos.test`, `faculty.demo@campusos.test`, `student.demo@campusos.test`, and `technician.demo@campusos.test`. Their generated temporary passwords are kept only in the Git-ignored local file `backend/demo-credentials.local.json`; open that file locally to sign in. Do not commit or share it, and use these accounts only in the isolated demo database. All demo accounts and records are visibly marked with `[CampusOS DEMO]`, `DEMO-` identifiers, or `CampusOS Demo` building names.
+
+Seeding is repeatable: deterministic emails, room/building pairs, course codes, record prefixes, and notification deduplication keys identify the demo data. Existing marked demo records are reused without being updated; missing demo records are created. A collision with an unmarked record aborts the transaction. The script does not delete records, reset the database, or change existing account passwords. If a demo record has been edited or removed, rerunning fills only missing records and preserves edits. Review the printed count of newly created documents; no seed command is run automatically.
 
 ## Booking approval and local MongoDB replica sets
 

@@ -70,19 +70,141 @@ async function requestApi(path, token, options = {}) {
   const responseData = await response.json().catch(() => ({}));
 
   if (!response.ok) {
-    throw new Error(responseData.message || "Request failed");
+    const error = new Error(responseData.message || "Request failed");
+    error.status = response.status;
+    throw error;
   }
 
   if (!withMeta) return responseData;
+
+  const listPayload = getListPayload(responseData);
+  if (!listPayload) {
+    const error = new Error(
+      "The server returned an unexpected list response. Refresh the page or contact support.",
+    );
+    error.name = "InvalidListResponseError";
+    throw error;
+  }
+  const records = requireRecordArray(listPayload.records, "List");
+
+  const embeddedPagination = listPayload.pagination || {};
+  const headerNumber = (name, fallback) => {
+    const value = response.headers.get(name);
+    if (value === null) return fallback;
+    const parsed = Number(value);
+    return Number.isFinite(parsed) && parsed >= 0 ? parsed : fallback;
+  };
+  const total = headerNumber(
+    "X-Total-Count",
+    Number(embeddedPagination.total ?? embeddedPagination.totalCount) || records.length,
+  );
+  const page = headerNumber(
+    "X-Page",
+    Number(embeddedPagination.page) || 1,
+  );
+  const pageSize = headerNumber(
+    "X-Page-Size",
+    Number(embeddedPagination.pageSize ?? embeddedPagination.limit) || records.length,
+  );
   return {
-    data: responseData,
+    data: records,
     pagination: {
-      total: Number(response.headers.get("X-Total-Count")) || 0,
-      page: Number(response.headers.get("X-Page")) || 1,
-      pageSize: Number(response.headers.get("X-Page-Size")) || responseData.length,
-      totalPages: Number(response.headers.get("X-Total-Pages")) || 0,
+      total,
+      page,
+      pageSize,
+      totalPages: headerNumber(
+        "X-Total-Pages",
+        Number(embeddedPagination.totalPages) || (pageSize ? Math.ceil(total / pageSize) : 0),
+      ),
     },
   };
+}
+
+function getListPayload(payload) {
+  if (Array.isArray(payload)) return { records: payload, pagination: {} };
+  if (!payload || typeof payload !== "object") return null;
+
+  const candidates = [payload.data, payload.records, payload.items];
+  for (const candidate of candidates) {
+    if (Array.isArray(candidate)) {
+      return { records: candidate, pagination: payload.pagination || payload.meta || {} };
+    }
+    if (candidate && typeof candidate === "object") {
+      for (const key of ["data", "records", "items"]) {
+        if (Array.isArray(candidate[key])) {
+          return {
+            records: candidate[key],
+            pagination: candidate.pagination || candidate.meta || payload.pagination || payload.meta || {},
+          };
+        }
+      }
+    }
+  }
+  return null;
+}
+
+function requireRecordArray(value, label) {
+  if (!Array.isArray(value) || value.some((item) => !item || typeof item !== "object" || Array.isArray(item))) {
+    throw new Error(`${label} response is invalid. Refresh the page or contact support.`);
+  }
+  return value;
+}
+
+async function requestList(path, token, options = {}) {
+  const payload = await requestApi(path, token, options);
+  const listPayload = getListPayload(payload);
+  if (!listPayload) throw new Error(`${path} returned an unexpected list response.`);
+  return requireRecordArray(listPayload.records, path);
+}
+
+function requireObject(value, label) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    throw new Error(`${label} response is invalid. Refresh the page or contact support.`);
+  }
+  return value;
+}
+
+function normalizeDashboardPayload(payload) {
+  const dashboard = requireObject(payload, "Dashboard");
+  const roleLists = {
+    student: ["classes", "attendance", "notices"],
+    faculty: ["classes", "bookings", "notices"],
+    admin: ["recentNotices"],
+    technician: [],
+  };
+  if (!Object.hasOwn(roleLists, dashboard.role)) throw new Error("Dashboard response has an unsupported role.");
+  for (const field of roleLists[dashboard.role]) {
+    requireRecordArray(dashboard[field], `Dashboard ${field}`);
+  }
+  return dashboard;
+}
+
+function normalizeAnalyticsPayload(payload) {
+  const analytics = requireObject(payload, "Analytics");
+  for (const field of ["totals", "bookings", "complaints", "attendance"]) requireObject(analytics[field], `Analytics ${field}`);
+  requireRecordArray(analytics.bookingTrend, "Analytics booking trend");
+  requireRecordArray(analytics.roomUsage, "Analytics room usage");
+  return analytics;
+}
+
+function normalizeForecastPayload(payload) {
+  const forecast = requireObject(payload, "Room forecast");
+  requireObject(forecast.history, "Room forecast history");
+  requireObject(forecast.forecast, "Room forecast prediction");
+  const patterns = requireObject(forecast.historicalPatterns, "Historical patterns");
+  for (const field of ["weekdays", "timeSlots", "buildings", "roomTypes"]) requireRecordArray(patterns[field], `Historical ${field}`);
+  const periods = requireRecordArray(forecast.forecast.periods, "Forecast periods");
+  if (periods.some((period) => typeof period.date !== "string" || typeof period.day !== "string" || typeof period.slot !== "string" || !Number.isFinite(period.expectedBookedHours))) {
+    throw new Error("Forecast period data is invalid. Refresh the page or contact support.");
+  }
+  requireRecordArray(forecast.roomUsage, "Forecast room usage");
+  return forecast;
+}
+
+function normalizeRecommendationPayload(payload) {
+  const result = requireObject(payload, "Room recommendation");
+  requireRecordArray(result.recommendations, "Room recommendations");
+  return result;
 }
 
 function App() {
@@ -93,9 +215,11 @@ function App() {
   );
   const [page, setPage] = useState("Overview");
   const [dashboard, setDashboard] = useState({});
+  const [dashboardError, setDashboardError] = useState("");
   const [isDashboardLoading, setIsDashboardLoading] = useState(true);
   const [records, setRecords] = useState([]);
   const [totalRecords, setTotalRecords] = useState(0);
+  const [listError, setListError] = useState("");
   const [listQuery, setListQuery] = useState({ page: 1, limit: 10 });
   const [searchText, setSearchText] = useState("");
   const [isModalOpen, setIsModalOpen] = useState(false);
@@ -110,6 +234,46 @@ function App() {
   const [isDeleting, setIsDeleting] = useState(false);
   const [notificationTarget, setNotificationTarget] = useState(null);
   const activeListRequest = useRef(null);
+  const dashboardRefreshRequest = useRef(null);
+  const refreshDashboard = useCallback(async ({ afterMutation = false } = {}) => {
+    if (!token) return;
+    const current = dashboardRefreshRequest.current;
+    if (current?.token === token) {
+      if (afterMutation) current.refreshAgain = true;
+      return current.promise;
+    }
+
+    const request = { token, refreshAgain: false, promise: null };
+    dashboardRefreshRequest.current = request;
+    request.promise = (async () => {
+      try {
+        do {
+          request.refreshAgain = false;
+          setIsDashboardLoading(true);
+          try {
+            const result = normalizeDashboardPayload(await requestApi("/dashboard", token));
+            if (dashboardRefreshRequest.current === request) {
+              setDashboard(result);
+              setDashboardError("");
+            }
+          } catch (error) {
+            if (dashboardRefreshRequest.current === request) setDashboardError(error.message || "Unable to load dashboard data.");
+          }
+        } while (request.refreshAgain && dashboardRefreshRequest.current === request);
+      } finally {
+        if (dashboardRefreshRequest.current === request) {
+          dashboardRefreshRequest.current = null;
+          setIsDashboardLoading(false);
+        }
+      }
+    })();
+    return request.promise;
+  }, [token]);
+  const searchTechnicians = useCallback(async (search) => {
+    const params = new URLSearchParams({ page: "1", limit: "25" });
+    if (search.trim()) params.set("search", search.trim());
+    return requestList(`/admin/users/technicians?${params}`, token);
+  }, [token]);
   const handleListQueryChange = useCallback((query) => setListQuery(query), []);
   const navigateToPage = useCallback((nextPage) => {
     setNotificationTarget(null);
@@ -135,28 +299,54 @@ function App() {
       return;
     }
 
+    let active = true;
+    setSessionReady(false);
     requestApi("/auth/profile", token)
-      .then(({ user: currentUser }) => {
+      .then((result) => {
+        if (!active) return;
+        const currentUser = requireObject(result?.user, "Profile user");
+        if (!currentUser.id || !["admin", "faculty", "student", "technician"].includes(currentUser.role)) {
+          throw new Error("Profile response is missing a valid account identity or role.");
+        }
         setUser(currentUser);
         localStorage.setItem("user", JSON.stringify(currentUser));
       })
-      .catch(handleLogout)
-      .finally(() => setSessionReady(true));
+      .catch((error) => {
+        if (!active) return;
+        if (error.status === 401) {
+          clearLocalSession();
+        } else {
+          try {
+            const cachedUser = JSON.parse(localStorage.getItem("user") || "null");
+            if (cachedUser && active) setUser(cachedUser);
+          } catch {
+            localStorage.removeItem("user");
+          }
+          setErrorMessage(error.message);
+        }
+      })
+      .finally(() => { if (active) setSessionReady(true); });
+    return () => { active = false; };
   }, [token]);
 
   useEffect(() => {
-    if (!token) {
-      return;
-    }
+    if (token) void refreshDashboard();
+  }, [token, refreshDashboard]);
 
-    let active = true;
-    setIsDashboardLoading(true);
-    requestApi("/dashboard", token)
-      .then((result) => { if (active) setDashboard(result); })
-      .catch((error) => { if (active) setErrorMessage(error.message); })
-      .finally(() => { if (active) setIsDashboardLoading(false); });
-    return () => { active = false; };
-  }, [token]);
+  useEffect(() => {
+    if (!token || page !== "Overview") return undefined;
+    const refreshWhenVisible = () => {
+      if (document.visibilityState === "visible") void refreshDashboard();
+    };
+    const interval = window.setInterval(refreshWhenVisible, 60_000);
+    window.addEventListener("focus", refreshWhenVisible);
+    document.addEventListener("visibilitychange", refreshWhenVisible);
+    return () => {
+      window.clearInterval(interval);
+      window.removeEventListener("focus", refreshWhenVisible);
+      document.removeEventListener("visibilitychange", refreshWhenVisible);
+    };
+  }, [token, page, refreshDashboard]);
 
   useEffect(() => {
     if (!token) return;
@@ -169,7 +359,7 @@ function App() {
     if (!token) return;
     let active = true;
     if (page === "Complaints" && user?.role === "admin") {
-      requestApi("/admin/users/technicians?limit=100", token)
+      requestList("/admin/users/technicians?page=1&limit=25", token)
         .then((result) => { if (active) setTechnicians(result); })
         .catch((error) => { if (active && error.name !== "AbortError") setErrorMessage(error.message); });
     } else {
@@ -187,12 +377,14 @@ function App() {
     if (!endpoint) {
       setRecords([]);
       setTotalRecords(0);
+      setListError("");
       setIsLoading(false);
       if (activeListRequest.current === controller) activeListRequest.current = null;
       return;
     }
 
     setIsLoading(true);
+    setListError("");
     setRecords([]);
     setTotalRecords(0);
     try {
@@ -201,13 +393,16 @@ function App() {
         if (value !== undefined && value !== null && value !== "") params.set(key, value);
       });
       const result = await requestApi(`${endpoint}?${params.toString()}`, token, { signal, withMeta: true });
+      if (!Array.isArray(result.data)) {
+        throw new Error("The server returned an unexpected list response. Refresh the page or contact support.");
+      }
       setRecords(result.data);
-      setTotalRecords(result.pagination.total);
+      setTotalRecords(Number.isFinite(result.pagination.total) ? result.pagination.total : result.data.length);
     } catch (error) {
       if (error.name === "AbortError") return;
       setRecords([]);
       setTotalRecords(0);
-      setErrorMessage(error.message);
+      setListError(error.message || "Unable to load records.");
     } finally {
       if (!signal?.aborted) setIsLoading(false);
       if (activeListRequest.current === controller) activeListRequest.current = null;
@@ -222,12 +417,23 @@ function App() {
     setSessionReady(true);
   }
 
-  function handleLogout() {
+  function clearLocalSession() {
     localStorage.removeItem("token");
     localStorage.removeItem("user");
     setToken("");
     setUser(null);
+    dashboardRefreshRequest.current = null;
+    setDashboard({});
+    setIsDashboardLoading(false);
     setSessionReady(true);
+  }
+
+  function handleLogout() {
+    const activeToken = token;
+    clearLocalSession();
+    if (activeToken) {
+      void requestApi("/auth/logout", activeToken, { method: "POST" }).catch(() => {});
+    }
   }
 
   async function createRecord(record) {
@@ -254,8 +460,7 @@ function App() {
         `${getRecordLabel(page)} ${editingRecord ? "updated" : "created"} successfully.`,
       );
       await loadRecords(page);
-      const updatedDashboard = await requestApi("/dashboard", token);
-      setDashboard(updatedDashboard);
+      await refreshDashboard({ afterMutation: true });
     } catch (error) {
       setErrorMessage(error.message);
       throw error;
@@ -270,6 +475,7 @@ function App() {
       await requestApi(`${resourceEndpoints[page]}/${record._id}`, token, { method: "DELETE" });
       setPendingDelete(null);
       await loadRecords(page);
+      await refreshDashboard({ afterMutation: true });
       setSuccessMessage(`${getRecordLabel(page)} deleted successfully.`);
     } catch (error) { setErrorMessage(error.message); }
     finally { setIsDeleting(false); }
@@ -338,7 +544,7 @@ function App() {
           )}
 
           {page === "Overview" ? (
-            <DashboardPage dashboard={dashboard} isLoading={isDashboardLoading} onNavigate={navigateToPage} />
+            <DashboardPage dashboard={dashboard} dashboardError={dashboardError} isLoading={isDashboardLoading} onNavigate={navigateToPage} onRetry={() => refreshDashboard()} />
           ) : page === "Analytics" && user?.role === "admin" ? (
             <AnalyticsDashboardPage token={token} />
           ) : page === "Room recommendations" ? (
@@ -350,6 +556,7 @@ function App() {
               initialRecordId={notificationTarget?.page === page ? notificationTarget.id : ""}
               records={records}
               totalRecords={totalRecords}
+              listError={listError}
               onQueryChange={handleListQueryChange}
               isLoading={isLoading}
               searchText={searchText}
@@ -370,6 +577,7 @@ function App() {
               userId={user?.id || user?._id}
               userRole={user?.role}
               technicians={technicians}
+              onSearchTechnicians={searchTechnicians}
               canInspectRoom={["admin", "faculty", "technician"].includes(user?.role)}
               onInspectRoom={setInspectionRoom}
               onEdit={(record) => {
@@ -384,6 +592,7 @@ function App() {
                     body: JSON.stringify({ status: "Resolved" }),
                   });
                   await loadRecords(page);
+                  await refreshDashboard({ afterMutation: true });
                   setSuccessMessage("Complaint marked as resolved.");
                 } catch (error) {
                   setErrorMessage(error.message);
@@ -397,6 +606,7 @@ function App() {
                     body: JSON.stringify({ status }),
                   });
                   await loadRecords(page);
+                  await refreshDashboard({ afterMutation: true });
                   setSuccessMessage(`Booking ${status.toLowerCase()}.`);
                 } catch (error) {
                   setErrorMessage(error.message);
@@ -406,6 +616,7 @@ function App() {
                 try {
                   await requestApi(`/bookings/${record._id}/cancel`, token, { method: "PATCH" });
                   await loadRecords(page);
+                  await refreshDashboard({ afterMutation: true });
                   setSuccessMessage("Booking request cancelled.");
                 } catch (error) {
                   setErrorMessage(error.message);
@@ -418,6 +629,7 @@ function App() {
                     body: JSON.stringify({ technicianId: technicianId || null }),
                   });
                   await loadRecords(page);
+                  await refreshDashboard({ afterMutation: true });
                   setSuccessMessage("Maintenance assignment updated.");
                 } catch (error) { setErrorMessage(error.message); throw error; }
               }}
@@ -425,6 +637,7 @@ function App() {
                 try {
                   await requestApi(`/complaints/${record._id}/work`, token, { method: "PATCH", body: JSON.stringify(values) });
                   await loadRecords(page);
+                  await refreshDashboard({ afterMutation: true });
                   setSuccessMessage(values.status === "Pending Verification" ? "Repair submitted for faculty verification." : "Work progress updated.");
                 } catch (error) { setErrorMessage(error.message); throw error; }
               }}
@@ -432,7 +645,7 @@ function App() {
                 try {
                   await requestApi(`/complaints/${record._id}/verify`, token, { method: "PATCH", body: JSON.stringify({ decision, note }) });
                   await loadRecords(page);
-                  await requestApi("/dashboard", token).then(setDashboard);
+                  await refreshDashboard({ afterMutation: true });
                   setSuccessMessage(decision === "accept" ? "Repair accepted and complaint closed." : "Repair rejected and returned to the technician.");
                 } catch (error) { setErrorMessage(error.message); throw error; }
               }}
@@ -455,7 +668,7 @@ function App() {
           room={inspectionRoom}
           token={token}
           onClose={() => setInspectionRoom(null)}
-          onSaved={async () => { setInspectionRoom(null); await loadRecords("Classrooms"); }}
+          onSaved={async () => { setInspectionRoom(null); await loadRecords("Classrooms"); await refreshDashboard({ afterMutation: true }); }}
         />
       )}
       {pendingDelete && <div className="overlay" role="presentation" onMouseDown={(event) => event.target === event.currentTarget && !isDeleting && setPendingDelete(null)}>
@@ -617,7 +830,9 @@ function NotificationBell({ token, onNavigate }) {
     try {
       const result = await requestApi("/notifications/unread-count", token);
       if (requestId !== unreadRequestId.current) return;
-      setUnreadCount(result.unreadCount || 0);
+      const count = Number(result?.unreadCount);
+      if (!Number.isSafeInteger(count) || count < 0) throw new Error("Unread notification count response is invalid.");
+      setUnreadCount(count);
       setNotificationError("");
     } catch (error) { if (requestId === unreadRequestId.current && error.name !== "AbortError") setNotificationError(error.message); }
   }
@@ -625,8 +840,7 @@ function NotificationBell({ token, onNavigate }) {
   async function loadNotifications() {
     setLoading(true);
     try {
-      const items = await requestApi("/notifications", token);
-      const list = Array.isArray(items) ? items : [];
+      const list = await requestList("/notifications", token);
       setNotifications(list);
       setUnreadCount(list.filter((item) => !item.readAt).length);
       setNotificationError("");
@@ -637,13 +851,19 @@ function NotificationBell({ token, onNavigate }) {
 
   useEffect(() => {
     let active = true;
-    const refresh = () => { if (active && !document.hidden) loadUnreadCount(); };
+    let refreshTimer;
+    const refresh = () => {
+      if (!active || document.hidden) return;
+      window.clearTimeout(refreshTimer);
+      refreshTimer = window.setTimeout(() => { if (active) loadUnreadCount(); }, 100);
+    };
     refresh();
     const timer = setInterval(refresh, 30000);
     window.addEventListener("focus", refresh);
     document.addEventListener("visibilitychange", refresh);
     return () => {
       active = false;
+      window.clearTimeout(refreshTimer);
       clearInterval(timer);
       window.removeEventListener("focus", refresh);
       document.removeEventListener("visibilitychange", refresh);
@@ -661,7 +881,7 @@ function NotificationBell({ token, onNavigate }) {
     setReadingId(notification._id);
     try {
       await requestApi(`/notifications/${notification._id}/read`, token, { method: "PATCH" });
-      setNotifications((items) => items.map((item) => item._id === notification._id ? { ...item, readAt: new Date().toISOString() } : item));
+      setNotifications((items) => (Array.isArray(items) ? items : []).map((item) => item._id === notification._id ? { ...item, readAt: new Date().toISOString() } : item));
       setUnreadCount((count) => Math.max(0, count - 1));
       setNotificationError("");
     } catch (error) { setNotificationError(error.message); throw error; }
@@ -673,7 +893,7 @@ function NotificationBell({ token, onNavigate }) {
     setReadingId(notification._id);
     try {
       await requestApi(`/notifications/${notification._id}/unread`, token, { method: "PATCH" });
-      setNotifications((items) => items.map((item) => item._id === notification._id ? { ...item, readAt: null } : item));
+      setNotifications((items) => (Array.isArray(items) ? items : []).map((item) => item._id === notification._id ? { ...item, readAt: null } : item));
       setUnreadCount((count) => count + 1);
       setNotificationError("");
     } catch (error) { setNotificationError(error.message); }
@@ -693,7 +913,7 @@ function NotificationBell({ token, onNavigate }) {
     setMarkingAllRead(true);
     try {
       await requestApi("/notifications/read-all", token, { method: "PATCH" });
-      setNotifications((items) => items.map((item) => ({ ...item, readAt: item.readAt || new Date().toISOString() })));
+      setNotifications((items) => (Array.isArray(items) ? items : []).map((item) => ({ ...item, readAt: item.readAt || new Date().toISOString() })));
       setUnreadCount(0);
       setNotificationError("");
     } catch (error) { setNotificationError(error.message); }
@@ -778,7 +998,7 @@ function AnalyticsDashboardPage({ token }) {
     setIsLoading(true);
     setError("");
     requestApi(`/dashboard/analytics?range=${range}`, token)
-      .then((result) => { if (active) setAnalytics(result); })
+      .then((result) => { if (active) setAnalytics(normalizeAnalyticsPayload(result)); })
       .catch((requestError) => { if (active) setError(requestError.message); })
       .finally(() => { if (active) setIsLoading(false); });
     return () => { active = false; };
@@ -907,7 +1127,7 @@ function AnalyticsMetricSection({ title, metrics }) {
 }
 
 function BookingTrendChart({ data, granularity }) {
-  const chartData = data.slice(-24);
+  const chartData = Array.isArray(data) ? data.filter((item) => item && typeof item === "object" && typeof item.period === "string").slice(-24) : [];
   if (!chartData.length || chartData.every((item) => item.total === 0)) {
     return <div className="analytics-empty">No booking records for this period.</div>;
   }
@@ -960,10 +1180,11 @@ function BookingTrendChart({ data, granularity }) {
 }
 
 function AnalyticsBars({ rows }) {
-  const maxValue = Math.max(1, ...rows.map(([, value]) => value));
+  const safeRows = Array.isArray(rows) ? rows.filter((row) => Array.isArray(row) && row.length >= 3) : [];
+  const maxValue = Math.max(1, ...safeRows.map(([, value]) => Number(value) || 0));
   return (
     <div className="analytics-bars">
-      {rows.map(([label, value, color]) => (
+      {safeRows.map(([label, value, color]) => (
         <div className="analytics-bar-row" key={label}>
           <span>{label}</span>
           <div className="analytics-bar-track"><i style={{ width: `${(value / maxValue) * 100}%`, background: color }} /></div>
@@ -982,7 +1203,7 @@ function RoomForecastPanel({ token }) {
   useEffect(() => {
     let active = true;
     requestApi("/dashboard/analytics/room-forecast", token)
-      .then((result) => { if (active) setData(result); })
+      .then((result) => { if (active) setData(normalizeForecastPayload(result)); })
       .catch((requestError) => { if (active) setError(requestError.message); })
       .finally(() => { if (active) setIsLoading(false); });
     return () => { active = false; };
@@ -1097,24 +1318,26 @@ function RoomForecastPanel({ token }) {
 }
 
 function ForecastPattern({ title, subtitle, rows, emptyText }) {
+  const safeRows = Array.isArray(rows) ? rows : [];
   return (
     <section className="panel forecast-pattern">
       <PanelHeading title={title} subtitle={subtitle} />
-      {rows.length ? <AnalyticsBars rows={rows} /> : <div className="analytics-empty">{emptyText || "No booking data."}</div>}
+      {safeRows.length ? <AnalyticsBars rows={safeRows} /> : <div className="analytics-empty">{emptyText || "No booking data."}</div>}
     </section>
   );
 }
 
 function ForecastDailyChart({ days }) {
-  if (!days.length) return <div className="analytics-empty">No predictions available.</div>;
+  const safeDays = Array.isArray(days) ? days.filter((day) => day && typeof day === "object") : [];
+  if (!safeDays.length) return <div className="analytics-empty">No predictions available.</div>;
   const width = 760;
   const height = 190;
   const left = 44;
   const bottom = 35;
   const top = 12;
-  const maxHours = Math.max(1, ...days.map((day) => day.hours));
+  const maxHours = Math.max(1, ...safeDays.map((day) => Number(day.hours) || 0));
   const plotHeight = height - top - bottom;
-  const slot = (width - left - 12) / days.length;
+  const slot = (width - left - 12) / safeDays.length;
   const barWidth = Math.min(44, slot * 0.56);
   return (
     <div className="forecast-chart-wrap">
@@ -1123,7 +1346,7 @@ function ForecastDailyChart({ days }) {
           const y = top + plotHeight * (1 - fraction);
           return <g key={fraction}><line x1={left} y1={y} x2={width - 12} y2={y} stroke="#eceef3" /><text x={left - 8} y={y + 4} textAnchor="end">{(maxHours * fraction).toFixed(1)}</text></g>;
         })}
-        {days.map((day, index) => {
+        {safeDays.map((day, index) => {
           const barHeight = (day.hours / maxHours) * plotHeight;
           const x = left + index * slot + (slot - barWidth) / 2;
           const y = top + plotHeight - barHeight;
@@ -1174,7 +1397,7 @@ function RoomRecommendationPage({ token }) {
         endTime: criteria.endTime,
       });
       if (criteria.building.trim()) query.set("building", criteria.building.trim());
-      const result = await requestApi(`/rooms/recommendations?${query}`, token);
+      const result = normalizeRecommendationPayload(await requestApi(`/rooms/recommendations?${query}`, token));
       setRecommendations(result.recommendations);
       setMessage(result.message || "");
     } catch (requestError) {
@@ -1277,13 +1500,18 @@ function ErrorNotice({ message, onDismiss }) {
   );
 }
 
-function DashboardPage({ dashboard, isLoading, onNavigate }) {
-  if (!isLoading && !dashboard.role) return <section className="panel empty-state" role="status">Dashboard data is unavailable. Reload the page to try again.</section>;
+function DashboardPage({ dashboard, dashboardError, isLoading, onNavigate, onRetry }) {
+  if (dashboardError && !dashboard.role) return <section className="panel empty-state" role="alert"><p>{dashboardError}</p><button className="secondary" onClick={onRetry}>Retry</button></section>;
+  if (!isLoading && !dashboard.role) return <section className="panel empty-state" role="status"><p>Dashboard data is unavailable.</p><button className="secondary" onClick={onRetry}>Retry</button></section>;
   const student = dashboard.role === "student";
   const faculty = dashboard.role === "faculty";
   const technician = dashboard.role === "technician";
   const classes = Array.isArray(dashboard.classes) ? dashboard.classes : [];
-  const notices = dashboard.notices || dashboard.recentNotices || [];
+  const notices = Array.isArray(dashboard.notices)
+    ? dashboard.notices
+    : Array.isArray(dashboard.recentNotices)
+      ? dashboard.recentNotices
+      : [];
   const cards = student
     ? [
         [
@@ -1354,6 +1582,7 @@ function DashboardPage({ dashboard, isLoading, onNavigate }) {
 
   return (
     <>
+      {dashboardError && <div className="error" role="alert">{dashboardError} <button className="secondary" onClick={onRetry}>Retry</button></div>}
       <div className={`cards dashboard-cards dashboard-${dashboard.role || "loading"}`}>
         {isLoading ? Array.from({ length: dashboard.role === "admin" ? 6 : dashboard.role === "technician" ? 3 : 4 }, (_, index) => <div className="card card-skeleton" key={index}><i /><i /><i /></div>) : cards.map(([label, value, Icon, color]) => (
           <MetricCard
@@ -1512,6 +1741,7 @@ function ResourceTable({
   initialRecordId,
   records,
   totalRecords,
+  listError,
   onQueryChange,
   isLoading,
   searchText,
@@ -1525,18 +1755,23 @@ function ResourceTable({
   userId,
   userRole,
   technicians,
+  onSearchTechnicians,
   canInspectRoom,
   onInspectRoom,
   onAssignComplaint,
   onUpdateWork,
   onVerifyRepair,
 }) {
+  const hasInvalidRecords = !Array.isArray(records);
+  const resourceRecords = hasInvalidRecords ? [] : records;
+  const resourceTechnicians = Array.isArray(technicians) ? technicians : [];
+  const resourceTotal = Number.isSafeInteger(totalRecords) && totalRecords >= 0 ? totalRecords : 0;
   const [filters, setFilters] = useState({ roomSearch: "", priority: "", status: "", assignee: "", building: "", operational: "", type: "", available: "", date: "" });
   const [sort, setSort] = useState({ column: "", direction: "asc" });
   const [currentPage, setCurrentPage] = useState(1);
   const [recordId, setRecordId] = useState(initialRecordId || "");
   const pageSize = 10;
-  const pageCount = Math.max(1, Math.ceil(totalRecords / pageSize));
+  const pageCount = Math.max(1, Math.ceil(resourceTotal / pageSize));
 
   useEffect(() => { setCurrentPage(1); }, [page, searchText, filters]);
   useEffect(() => { if (currentPage > pageCount) setCurrentPage(pageCount); }, [currentPage, pageCount]);
@@ -1578,7 +1813,7 @@ function ResourceTable({
 
   return (
     <div className="panel tablepanel">
-      <PanelHeading title={page === "Complaints" ? "Central Maintenance Notice Board" : page} subtitle={`${totalRecords} records`}>
+      <PanelHeading title={page === "Complaints" ? "Central Maintenance Notice Board" : page} subtitle={`${resourceTotal} records`}>
         <div className="resource-filters">
           <div className="filter"><Search size={16} /><input placeholder={`Filter ${page.toLowerCase()}`} value={searchText} onChange={(event) => onSearch(event.target.value)} /></div>
           {page === "Complaints" && <div className="maintenance-filters">
@@ -1590,7 +1825,7 @@ function ResourceTable({
               <option value="">All statuses</option>{["Open", "In progress", "Pending Verification", "Resolved", "Closed"].map((status) => <option key={status}>{status}</option>)}
             </select>
             {userRole === "admin" && <select aria-label="Filter by assignee" value={filters.assignee} onChange={(event) => setFilters((value) => ({ ...value, assignee: event.target.value }))}>
-              <option value="">All assignees</option><option value="unassigned">Unassigned</option>{technicians.map((technician) => <option key={technician.id} value={technician.id}>{technician.name}</option>)}
+              <option value="">All assignees</option><option value="unassigned">Unassigned</option>{resourceTechnicians.map((technician) => <option key={technician.id} value={technician.id}>{technician.name}</option>)}
             </select>}
           </div>}
           {page === "Room bookings" && <div className="maintenance-filters"><select aria-label="Filter bookings by status" value={filters.status} onChange={(event) => setFilters((value) => ({ ...value, status: event.target.value }))}>
@@ -1609,7 +1844,7 @@ function ResourceTable({
         <table>
           <TableHeader page={page} sort={sort} onSort={toggleSort} />
           <tbody>
-            {records.map((record, index) => (
+            {resourceRecords.map((record, index) => (
               <ResourceRow
                 key={record._id || index}
                 page={page}
@@ -1623,6 +1858,7 @@ function ResourceTable({
                 userId={userId}
                 userRole={userRole}
                 technicians={technicians}
+                onSearchTechnicians={onSearchTechnicians}
                 canInspectRoom={canInspectRoom}
                 onInspectRoom={onInspectRoom}
                 onAssignComplaint={onAssignComplaint}
@@ -1637,17 +1873,27 @@ function ResourceTable({
           <div className="table-skeleton" aria-label={`Loading ${page.toLowerCase()}`}>
             {Array.from({ length: 5 }, (_, index) => <div className="table-skeleton-row" key={index}><i /><i /><i /><i /></div>)}
           </div>
+        ) : listError ? (
+          <div className="empty error" role="alert">
+            <AlertCircle size={20} />
+            <span>{listError}</span>
+          </div>
+        ) : hasInvalidRecords ? (
+          <div className="empty error" role="alert">
+            <AlertCircle size={20} />
+            <span>Records could not be displayed because the list response was invalid. Refresh the page or contact support.</span>
+          </div>
         ) : (
-          records.length === 0 && (
+          resourceRecords.length === 0 && (
             <div className="empty">
               <AlertCircle size={20} />
-              <span>{totalRecords === 0 ? "No records found for these filters." : "No records on this page."}</span>
+              <span>{resourceTotal === 0 ? "No records found for these filters." : "No records on this page."}</span>
             </div>
           )
         )}
       </div>
-      {!isLoading && totalRecords > 0 && <div className="table-pagination">
-        <span>Showing {(currentPage - 1) * pageSize + 1}–{Math.min(currentPage * pageSize, totalRecords)} of {totalRecords}</span>
+      {!isLoading && !listError && !hasInvalidRecords && resourceTotal > 0 && <div className="table-pagination">
+        <span>Showing {(currentPage - 1) * pageSize + 1}–{Math.min(currentPage * pageSize, resourceTotal)} of {resourceTotal}</span>
         <div><button className="secondary" disabled={currentPage === 1} onClick={() => setCurrentPage((value) => Math.max(1, value - 1))}>Previous</button><span>Page {currentPage} of {pageCount}</span><button className="secondary" disabled={currentPage >= pageCount} onClick={() => setCurrentPage((value) => Math.min(pageCount, value + 1))}>Next</button></div>
       </div>}
     </div>
@@ -1694,7 +1940,7 @@ function getServerSortFields(page) {
   return fields[page] || {};
 }
 
-function MaintenanceRow({ record, userRole, canEdit, technicians, onResolve, onAssign, onUpdateWork, onVerify }) {
+function MaintenanceRow({ record, userRole, canEdit, technicians, onSearchTechnicians, onResolve, onAssign, onUpdateWork, onVerify }) {
   const [showWorkForm, setShowWorkForm] = useState(false);
   const [note, setNote] = useState("");
   const [resolutionDetails, setResolutionDetails] = useState("");
@@ -1702,7 +1948,26 @@ function MaintenanceRow({ record, userRole, canEdit, technicians, onResolve, onA
   const [verificationNote, setVerificationNote] = useState("");
   const [actionError, setActionError] = useState("");
   const [saving, setSaving] = useState(false);
+  const [technicianSearch, setTechnicianSearch] = useState("");
+  const safeTechnicians = Array.isArray(technicians) ? technicians : [];
+  const [technicianOptions, setTechnicianOptions] = useState(safeTechnicians);
   const isFacility = Boolean(record.room);
+
+  useEffect(() => { setTechnicianOptions(safeTechnicians); }, [technicians]);
+  useEffect(() => {
+    if (userRole !== "admin" || !isFacility || !onSearchTechnicians) return undefined;
+    if (!technicianSearch.trim()) {
+      setTechnicianOptions(safeTechnicians);
+      return undefined;
+    }
+    let active = true;
+    const timer = window.setTimeout(() => {
+      onSearchTechnicians(technicianSearch)
+        .then((options) => { if (active) setTechnicianOptions(options); })
+        .catch((error) => { if (active) setActionError(error.message); });
+    }, 250);
+    return () => { active = false; window.clearTimeout(timer); };
+  }, [userRole, isFacility, technicianSearch, onSearchTechnicians, technicians]);
 
   async function submitWork(status) {
     if (!note.trim()) { setActionError("Add a short work update."); return; }
@@ -1750,7 +2015,8 @@ function MaintenanceRow({ record, userRole, canEdit, technicians, onResolve, onA
     finally { setSaving(false); }
   }
 
-  const history = record.history || [];
+  const history = Array.isArray(record.history) ? record.history : [];
+  const resolutionEvidence = Array.isArray(record.resolutionEvidence) ? record.resolutionEvidence : [];
   return (
     <tr className="maintenance-row">
       <td><strong>{record.title}</strong><small>{record.description}</small></td>
@@ -1760,10 +2026,15 @@ function MaintenanceRow({ record, userRole, canEdit, technicians, onResolve, onA
       <td>{record.submittedBy?.name || "—"}</td>
       <td>
         {canEdit && isFacility ? (
-          <select aria-label={`Assign ${record.title}`} disabled={saving || ["Closed", "Resolved"].includes(record.status)} value={record.assignedTo?._id || ""} onChange={(event) => assignTechnician(event.target.value)}>
-            <option value="">Unassigned</option>
-            {technicians.map((technician) => <option key={technician.id} value={technician.id}>{technician.name}</option>)}
-          </select>
+          <div className="technician-selector">
+            <input aria-label={`Search technicians for ${record.title}`} placeholder="Search technicians" value={technicianSearch} onChange={(event) => setTechnicianSearch(event.target.value)} />
+            <select aria-label={`Assign ${record.title}`} disabled={saving || ["Closed", "Resolved"].includes(record.status)} value={record.assignedTo?._id || ""} onChange={(event) => assignTechnician(event.target.value)}>
+              <option value="">Unassigned</option>
+              {record.assignedTo && !technicianOptions.some((item) => item.id === record.assignedTo._id) && <option value={record.assignedTo._id}>{record.assignedTo.name}</option>}
+              {technicianOptions.map((technician) => <option key={technician.id} value={technician.id}>{technician.name}</option>)}
+              {!technicianOptions.length && <option value="" disabled>No matching technicians</option>}
+            </select>
+          </div>
         ) : record.assignedTo?.name || "—"}
       </td>
       <td>
@@ -1772,11 +2043,11 @@ function MaintenanceRow({ record, userRole, canEdit, technicians, onResolve, onA
           <summary>History ({history.length})</summary>
           {record.verifiedAt && <p><strong>Verified by:</strong> {record.verifiedBy?.name || "Faculty"} · {new Date(record.verifiedAt).toLocaleString()}</p>}
           {record.resolutionDetails && <p><strong>Resolution:</strong> {record.resolutionDetails}</p>}
-          {record.resolutionEvidence?.map((url, index) => <p key={`${url}-${index}`}><strong>Evidence:</strong> {url}</p>)}
+          {resolutionEvidence.map((url, index) => <p key={`${url}-${index}`}><strong>Evidence:</strong> {url}</p>)}
           {history.map((item) => <div className="complaint-history-item" key={item._id || `${item.action}-${item.createdAt}`}>
             <strong>{item.action}</strong><small>{item.actor?.name || "User"} · {new Date(item.createdAt).toLocaleString()}</small>
             {item.note && <p>{item.note}</p>}
-            {item.evidence?.map((url, index) => <small key={`${url}-${index}`}>Evidence: {url}</small>)}
+            {(Array.isArray(item.evidence) ? item.evidence : []).map((url, index) => <small key={`${url}-${index}`}>Evidence: {url}</small>)}
           </div>)}
         </details>
       </td>
@@ -1811,8 +2082,9 @@ function MaintenanceRow({ record, userRole, canEdit, technicians, onResolve, onA
 
 function RoomInspectionModal({ room, token, onClose, onSaved }) {
   const types = ["Fan", "AC", "Projector", "Light"];
+  const roomEquipment = Array.isArray(room.equipment) ? room.equipment : [];
   const [equipment, setEquipment] = useState(() => types.map((type) => {
-    const current = room.equipment?.find((item) => item.type === type);
+    const current = roomEquipment.find((item) => item?.type === type);
     return { type, status: current?.status || "Working", note: current?.note || "" };
   }));
   const [error, setError] = useState("");
@@ -1902,7 +2174,7 @@ function TableHeader({ page, sort, onSort }) {
   return (
     <thead>
       <tr>
-        {columnSets[page].map((column) => (
+        {(columnSets[page] || []).map((column) => (
           <th key={column} aria-sort={sort.column === column ? (sort.direction === "asc" ? "ascending" : "descending") : "none"}><button className="sort-heading" aria-label={`Sort by ${column}`} disabled={!sortableFields[column]} onClick={() => onSort(column)}>{column}{sort.column === column ? (sort.direction === "asc" ? " ↑" : " ↓") : ""}</button></th>
         ))}
       </tr>
@@ -1910,7 +2182,7 @@ function TableHeader({ page, sort, onSort }) {
   );
 }
 
-function ResourceRow({ page, record, canEdit, onEdit, onDelete, onResolve, onBookingDecision, onBookingCancel, userId, userRole, technicians, canInspectRoom, onInspectRoom, onAssignComplaint, onUpdateWork, onVerifyRepair }) {
+function ResourceRow({ page, record, canEdit, onEdit, onDelete, onResolve, onBookingDecision, onBookingCancel, userId, userRole, technicians, onSearchTechnicians, canInspectRoom, onInspectRoom, onAssignComplaint, onUpdateWork, onVerifyRepair }) {
   const [actionBusy, setActionBusy] = useState("");
   async function runBookingAction(action, actionName) {
     if (actionBusy) return;
@@ -1926,7 +2198,7 @@ function ResourceRow({ page, record, canEdit, onEdit, onDelete, onResolve, onBoo
   }
 
   if (page === "Complaints") {
-    return <MaintenanceRow record={record} userRole={userRole} canEdit={canEdit} technicians={technicians} onResolve={onResolve} onAssign={onAssignComplaint} onUpdateWork={onUpdateWork} onVerify={onVerifyRepair} />;
+    return <MaintenanceRow record={record} userRole={userRole} canEdit={canEdit} technicians={technicians} onSearchTechnicians={onSearchTechnicians} onResolve={onResolve} onAssign={onAssignComplaint} onUpdateWork={onUpdateWork} onVerify={onVerifyRepair} />;
   }
   if (page === "Faculty") {
     return (
@@ -2048,7 +2320,7 @@ function ResourceRow({ page, record, canEdit, onEdit, onDelete, onResolve, onBoo
           <StatusBadge status={record.available ? "Available" : "Unavailable"} />
         </td>
         <td><StatusBadge status={record.operationalStatus || "Not inspected"} /></td>
-        <td>{(record.equipment || []).map((item) => <small key={item.type}>{item.type}: {item.status}</small>)}</td>
+        <td>{(Array.isArray(record.equipment) ? record.equipment : []).filter(Boolean).map((item) => <small key={item.type}>{item.type}: {item.status}</small>)}</td>
         <td>
           {canEdit && (
             <>
@@ -2179,6 +2451,9 @@ function AuthenticationPage({ onLogin }) {
         return;
       }
 
+      if (typeof result?.token !== "string" || !result.token || !result.user || typeof result.user !== "object" || !result.user.role) {
+        throw new Error("The sign-in response was incomplete. Refresh the page or contact support.");
+      }
       onLogin(result.token, result.user);
     } catch (error) {
       setMessage(error.message);
@@ -2386,61 +2661,128 @@ function getFormFields(page) {
 
 function RecordModal({ page, token, onClose, onSubmit, initialRecord }) {
   const [formValues, setFormValues] = useState(() => {
-    if (!initialRecord) return page === "Classrooms" ? { type: ROOM_TYPES[0] } : {};
+    if (!initialRecord) return page === "Classrooms" ? { type: ROOM_TYPES[0] } : page === "Classes" ? { maxEnrollment: 60 } : {};
     return {
       ...initialRecord,
       type: page === "Classrooms" && !ROOM_TYPES.includes(initialRecord.type) ? "" : initialRecord.type,
       faculty: initialRecord.faculty?._id || initialRecord.faculty || "",
       room: initialRecord.room?._id || initialRecord.room || "",
-      enrolledStudents: (initialRecord.enrolledStudents || []).map(
+      enrolledStudents: (Array.isArray(initialRecord.enrolledStudents) ? initialRecord.enrolledStudents : []).map(
         (student) => student._id || student,
       ),
     };
   });
-  const [students, setStudents] = useState([]);
-  const [faculty, setFaculty] = useState([]);
-  const [rooms, setRooms] = useState([]);
+  const enrolledStudentsRef = useRef(formValues.enrolledStudents || []);
+  enrolledStudentsRef.current = formValues.enrolledStudents || [];
+  const campusClassValueRef = useRef(formValues.campusClass);
+  campusClassValueRef.current = formValues.campusClass;
+  const [students, setStudents] = useState(() => (Array.isArray(initialRecord?.enrolledStudents) ? initialRecord.enrolledStudents : []).filter((student) => student && typeof student === "object"));
+  const [faculty, setFaculty] = useState(() => initialRecord?.faculty && typeof initialRecord.faculty === "object" ? [initialRecord.faculty] : []);
+  const [rooms, setRooms] = useState(() => initialRecord?.room && typeof initialRecord.room === "object" ? [initialRecord.room] : []);
   const [classes, setClasses] = useState([]);
+  const [facultySearch, setFacultySearch] = useState("");
+  const [studentSearch, setStudentSearch] = useState("");
+  const [roomSearch, setRoomSearch] = useState("");
+  const [classSearch, setClassSearch] = useState("");
+  const [optionsLoading, setOptionsLoading] = useState(false);
   const [isSaving, setIsSaving] = useState(false);
   const [formError, setFormError] = useState("");
   const fields = getFormFields(page);
 
   useEffect(() => {
-    const loadOptions = async () => {
+    if (page !== "Classes") return undefined;
+    const controller = new AbortController();
+    const timer = window.setTimeout(async () => {
+      setOptionsLoading(true);
       try {
-        if (page === "Classes") {
-          const [facultyList, roomList, studentList] = await Promise.all([
-            requestApi("/faculty", token),
-            requestApi("/rooms", token),
-            requestApi("/students", token),
-          ]);
-          setFaculty(facultyList);
-          setRooms(roomList);
-          setStudents(studentList);
+        const params = new URLSearchParams({ page: "1", limit: "25" });
+        if (facultySearch.trim()) params.set("search", facultySearch.trim());
+        const result = await requestList(`/faculty?${params}`, token, { signal: controller.signal });
+        setFaculty(() => {
+          const selected = initialRecord?.faculty && typeof initialRecord.faculty === "object" ? [initialRecord.faculty] : [];
+          return [...new Map([...selected, ...result].map((item) => [item._id, item])).values()];
+        });
+      } catch (error) { if (error.name !== "AbortError") setFormError(error.message); }
+      finally { if (!controller.signal.aborted) setOptionsLoading(false); }
+    }, facultySearch ? 250 : 0);
+    return () => { window.clearTimeout(timer); controller.abort(); };
+  }, [page, token, facultySearch]);
+
+  useEffect(() => {
+    if (!["Classes", "Room bookings", "Complaints"].includes(page)) return undefined;
+    const controller = new AbortController();
+    const timer = window.setTimeout(async () => {
+      setOptionsLoading(true);
+      try {
+        const params = new URLSearchParams({ page: "1", limit: "100" });
+        if (roomSearch.trim()) params.set("search", roomSearch.trim());
+        const result = await requestList(`/rooms?${params}`, token, { signal: controller.signal });
+        setRooms(() => {
+          const selected = initialRecord?.room && typeof initialRecord.room === "object" ? [initialRecord.room] : [];
+          return [...new Map([...selected, ...result].map((item) => [item._id, item])).values()];
+        });
+      } catch (error) { if (error.name !== "AbortError") setFormError(error.message); }
+      finally { if (!controller.signal.aborted) setOptionsLoading(false); }
+    }, roomSearch ? 250 : 0);
+    return () => { window.clearTimeout(timer); controller.abort(); };
+  }, [page, token, roomSearch]);
+
+  useEffect(() => {
+    if (page !== "Classes" && page !== "Attendance") return undefined;
+    const controller = new AbortController();
+    const timer = window.setTimeout(async () => {
+      setOptionsLoading(true);
+      try {
+        const params = new URLSearchParams({ page: "1", limit: "25" });
+        if (page === "Attendance") params.set("includeStudents", "false");
+        if (classSearch.trim()) params.set("search", classSearch.trim());
+        const result = await requestList(`/classes?${params}`, token, { signal: controller.signal });
+        setClasses(result);
+        if (page === "Attendance" && !campusClassValueRef.current && result[0]) {
+          campusClassValueRef.current = result[0]._id;
+          setFormValues((values) => ({ ...values, campusClass: result[0]._id }));
         }
-        if (page === "Attendance") {
-          const classList = await requestApi("/classes", token);
-          setClasses(classList);
-          const selected =
-            classList.find((item) => item._id === formValues.campusClass) ||
-            classList[0];
-          if (selected) {
-            setFormValues((values) => ({
-              ...values,
-              campusClass: selected._id,
-            }));
-            setStudents(selected.enrolledStudents || []);
-          }
-        }
-        if (page === "Room bookings")
-          setRooms(await requestApi("/rooms", token));
-        if (page === "Complaints") setRooms(await requestApi("/rooms", token));
-      } catch (error) {
-        setFormError(error.message);
-      }
-    };
-    loadOptions();
-  }, [page, token]);
+      } catch (error) { if (error.name !== "AbortError") setFormError(error.message); }
+      finally { if (!controller.signal.aborted) setOptionsLoading(false); }
+    }, classSearch ? 250 : 0);
+    return () => { window.clearTimeout(timer); controller.abort(); };
+  }, [page, token, classSearch]);
+
+  useEffect(() => {
+    if (page !== "Classes") return undefined;
+    const controller = new AbortController();
+    const timer = window.setTimeout(async () => {
+      setOptionsLoading(true);
+      try {
+        const params = new URLSearchParams({ page: "1", limit: "25" });
+        if (studentSearch.trim()) params.set("search", studentSearch.trim());
+        const result = await requestList(`/students?${params}`, token, { signal: controller.signal });
+        setStudents((current) => {
+          const selectedIds = new Set(enrolledStudentsRef.current);
+          const selected = current.filter((student) => selectedIds.has(student._id));
+          return [...new Map([...selected, ...result].map((student) => [student._id, student])).values()];
+        });
+      } catch (error) { if (error.name !== "AbortError") setFormError(error.message); }
+      finally { if (!controller.signal.aborted) setOptionsLoading(false); }
+    }, studentSearch ? 250 : 0);
+    return () => { window.clearTimeout(timer); controller.abort(); };
+  }, [page, token, studentSearch]);
+
+  useEffect(() => {
+    if (page !== "Attendance" || !formValues.campusClass) return undefined;
+    const controller = new AbortController();
+    const timer = window.setTimeout(async () => {
+      setOptionsLoading(true);
+      try {
+        const params = new URLSearchParams({ page: "1", limit: "25" });
+        if (studentSearch.trim()) params.set("search", studentSearch.trim());
+        const result = await requestList(`/classes/${formValues.campusClass}/students?${params}`, token, { signal: controller.signal });
+        setStudents(result);
+      } catch (error) { if (error.name !== "AbortError") setFormError(error.message); }
+      finally { if (!controller.signal.aborted) setOptionsLoading(false); }
+    }, studentSearch ? 250 : 0);
+    return () => { window.clearTimeout(timer); controller.abort(); };
+  }, [page, token, formValues.campusClass, studentSearch]);
 
   function updateField(event) {
     const { name, value, selectedOptions } = event.target;
@@ -2452,10 +2794,8 @@ function RecordModal({ page, token, onClose, onSubmit, initialRecord }) {
           : value;
     setFormValues((values) => ({ ...values, [name]: nextValue }));
     if (name === "campusClass") {
-      const selectedClass = classes.find(
-        (campusClass) => campusClass._id === value,
-      );
-      setStudents(selectedClass?.enrolledStudents || []);
+      setStudentSearch("");
+      setStudents([]);
       setFormValues((values) => ({
         ...values,
         campusClass: value,
@@ -2529,6 +2869,11 @@ function RecordModal({ page, token, onClose, onSubmit, initialRecord }) {
                 ))}
               </select>
             ) : ["faculty", "room", "student", "campusClass"].includes(name) ? (
+              <>
+              {name === "faculty" && <input aria-label="Search faculty" placeholder="Search faculty" value={facultySearch} onChange={(event) => setFacultySearch(event.target.value)} />}
+              {name === "room" && <input aria-label="Search rooms" placeholder="Search rooms" value={roomSearch} onChange={(event) => setRoomSearch(event.target.value)} />}
+              {name === "campusClass" && <input aria-label="Search classes" placeholder="Search classes" value={classSearch} onChange={(event) => setClassSearch(event.target.value)} />}
+              {name === "student" && <input aria-label="Search enrolled students" placeholder="Search enrolled students" value={studentSearch} onChange={(event) => setStudentSearch(event.target.value)} />}
               <select
                 name={name}
                 required={name !== "room"}
@@ -2557,7 +2902,12 @@ function RecordModal({ page, token, onClose, onSubmit, initialRecord }) {
                   </option>
                 ))}
               </select>
+              {optionsLoading && <small role="status">Loading options…</small>}
+              {!optionsLoading && !((name === "faculty" ? faculty : name === "room" ? rooms : name === "campusClass" ? classes : students).length) && <small>No matching options. Change your search.</small>}
+              </>
             ) : name === "enrolledStudents" ? (
+              <>
+              <input aria-label="Search students to enroll" placeholder="Search students to enroll" value={studentSearch} onChange={(event) => setStudentSearch(event.target.value)} />
               <select
                 name={name}
                 multiple
@@ -2571,6 +2921,9 @@ function RecordModal({ page, token, onClose, onSubmit, initialRecord }) {
                   </option>
                 ))}
               </select>
+                {!students.length && <small>No matching students. Change your search.</small>}
+              <small>Search and select students. Enrollment is validated against class capacity and schedule conflicts.</small>
+              </>
             ) : name === "equipment" ? (
               <select name={name} required={Boolean(formValues.room)} value={formValues[name] || ""} onChange={updateField} disabled={!formValues.room}>
                 <option value="">Select equipment</option>{["Fan", "AC", "Projector", "Light"].map((item) => <option key={item}>{item}</option>)}

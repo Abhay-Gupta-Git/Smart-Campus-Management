@@ -7,6 +7,7 @@ const { createNotifications } = require("../utils/notifications");
 const { readPagination, readSearch, readSort, escapeRegex, executeListQuery } = require("../utils/pagination");
 const { isValidDateString } = require("../utils/validation");
 const { runTransaction, lockRoomReference, isTransactionUnsupported } = require("../utils/transactions");
+const { roomMaintenanceBlock, classConflictForBooking } = require("../utils/scheduleAvailability");
 
 function isValidTime(time) {
   return typeof time === "string" && /^([01]\d|2[0-3]):[0-5]\d$/.test(time);
@@ -72,7 +73,12 @@ async function createBooking(req, res) {
       if (!await lockRoomReference(Room, req.body.room, session)) return { status: 404, message: "Room not found." };
       const room = await Room.findById(req.body.room).session(session);
       if (!room) return { status: 404, message: "Room not found." };
-      if (!room.available) return { status: 409, message: "This room is currently unavailable." };
+      const maintenanceBlock = await roomMaintenanceBlock(room, session);
+      if (maintenanceBlock) return { status: 409, message: maintenanceBlock };
+      const classConflict = await classConflictForBooking({ roomId: room._id, ...req.body, session });
+      if (classConflict.conflict) return { status: 409, message: classConflict.invalidSchedule
+        ? "A class in this room has invalid schedule data; the room cannot be booked until it is corrected."
+        : "This time overlaps a scheduled class in the room." };
 
       const [booking] = await Booking.create([{
         room: room._id,
@@ -193,10 +199,33 @@ async function decideBooking(req, res) {
         result = { code: 404, message: "The requested room no longer exists." };
         return;
       }
+      const room = await Room.findById(booking.room).session(session);
+      if (!room) {
+        result = { code: 404, message: "The requested room no longer exists." };
+        return;
+      }
       if (status === "Approved") {
+        const maintenanceBlock = await roomMaintenanceBlock(room, session);
+        if (maintenanceBlock) {
+          result = { code: 409, message: maintenanceBlock };
+          return;
+        }
         const conflict = await Booking.findOne(conflictFilter(booking, booking._id)).session(session);
         if (conflict) {
           result = { code: 409, message: "This time overlaps an approved booking for the same room." };
+          return;
+        }
+        const classConflict = await classConflictForBooking({
+          roomId: booking.room,
+          date: booking.date,
+          startTime: booking.startTime,
+          endTime: booking.endTime,
+          session,
+        });
+        if (classConflict.conflict) {
+          result = { code: 409, message: classConflict.invalidSchedule
+            ? "A class in this room has invalid schedule data; the booking cannot be approved until it is corrected."
+            : "This time overlaps a scheduled class in the room." };
           return;
         }
       }

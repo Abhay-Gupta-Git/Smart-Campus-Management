@@ -71,8 +71,8 @@ async function recommendRooms(req, res) {
       Booking.find({ room: { $in: roomIds }, date, status: "Approved" })
         .select("room startTime endTime")
         .lean(),
-      CampusClass.find({ room: { $in: roomIds }, day: weekday })
-        .select("room startTime endTime")
+      CampusClass.find({ room: { $in: roomIds }, $or: [{ day: weekday }, { day: { $nin: WEEKDAYS } }] })
+        .select("room day startTime endTime")
         .lean(),
       Complaint.distinct("room", { room: { $in: roomIds }, status: { $ne: "Closed" } }),
     ]);
@@ -82,6 +82,11 @@ async function recommendRooms(req, res) {
       if (conflictsWithRequestedTime(booking, startTime, endTime)) unavailableIds.add(booking.room.toString());
     }
     for (const schedule of classSchedules) {
+      if (!WEEKDAYS.includes(schedule.day)) {
+        unavailableIds.add(schedule.room.toString());
+        continue;
+      }
+      if (schedule.day !== weekday) continue;
       if (conflictsWithRequestedTime(schedule, startTime, endTime)) unavailableIds.add(schedule.room.toString());
     }
 

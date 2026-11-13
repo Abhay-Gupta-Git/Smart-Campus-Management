@@ -470,7 +470,8 @@
   gap: 6px;
 }
 .maintenance-filters select,
-.maintenance-row select {
+.maintenance-row select,
+.technician-selector input {
   max-width: 170px;
   border: 1px solid #e8e9ef;
   border-radius: 6px;
@@ -541,6 +542,11 @@
 }
 .maintenance-actions {
   min-width: 230px;
+}
+.technician-selector {
+  display: grid;
+  gap: 5px;
+  min-width: 160px;
 }
 .work-update-form,
 .verification-actions {

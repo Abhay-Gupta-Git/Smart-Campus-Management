@@ -5,3 +5,5 @@ node_modules/
 !**/.env.example
 dist/
 coverage/
+/smart-campus-management/backend/demo-credentials.local.json
+/backend/demo-credentials.local.json

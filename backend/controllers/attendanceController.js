@@ -7,6 +7,7 @@ const { readPagination, readSearch, readSort, escapeRegex, executeListQuery } = 
 const respondError = require("../utils/respondError");
 const { runTransaction } = require("../utils/transactions");
 const recordActivity = require("../utils/activityLog");
+const { createNotifications } = require("../utils/notifications");
 
 async function listAttendance(req, res) {
   try {
@@ -120,6 +121,15 @@ async function markAttendance(req, res) {
 
     if (result.status !== 200) return res.status(result.status).json({ message: result.message });
     await recordActivity({ actor: req.user.id, action: "Attendance recorded", entityType: "attendance", entityId: result.record._id, summary: `Attendance recorded for ${date} as ${status}.` });
+    await createNotifications({
+      recipients: [studentId],
+      title: "Attendance updated",
+      message: `Your attendance for ${date} was marked ${status}.`,
+      entityType: "attendance",
+      entityId: result.record._id,
+      targetPage: "Attendance",
+      eventId: `attendance:${result.record._id}:${result.record.updatedAt?.getTime?.() || Date.now()}`,
+    });
     return res.json(result.record);
   } catch (error) {
     if (error.code === 11000) return res.status(409).json({ message: "An attendance record already exists for this student, class, and date. Refresh and retry." });
