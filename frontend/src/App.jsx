@@ -804,7 +804,9 @@ function AnalyticsDashboardPage({ token }) {
     ["Total complaints", analytics.complaints.total, MessageSquareWarning, "var(--tone-info)"],
     ["Open", analytics.complaints.Open, AlertCircle, "var(--tone-danger)"],
     ["In progress", analytics.complaints["In progress"], Clock3, "var(--tone-warning)"],
+    ["Pending verification", analytics.complaints["Pending Verification"], Clock3, "var(--tone-info)"],
     ["Resolved", analytics.complaints.Resolved, CheckCircle2, "var(--tone-success)"],
+    ["Closed", analytics.complaints.Closed, CheckCircle2, "var(--tone-success)"],
   ];
   const attendanceMetrics = [
     ["Attendance records", analytics.attendance.total, ClipboardCheck, "var(--tone-info)"],
@@ -844,7 +846,9 @@ function AnalyticsDashboardPage({ token }) {
             <AnalyticsBars rows={[
               ["Open", analytics.complaints.Open, "var(--tone-danger)"],
               ["In progress", analytics.complaints["In progress"], "var(--tone-warning)"],
+              ["Pending Verification", analytics.complaints["Pending Verification"], "var(--tone-info)"],
               ["Resolved", analytics.complaints.Resolved, "var(--tone-success)"],
+              ["Closed", analytics.complaints.Closed, "var(--tone-success)"],
             ]} />
           ) : <div className="analytics-empty">No complaint records for this period.</div>}
         </section>
@@ -1294,7 +1298,7 @@ function DashboardPage({ dashboard, isLoading, onNavigate }) {
           "var(--tone-success)",
         ],
         [
-          "Attendance records",
+          "Recent attendance",
           dashboard.attendance?.length || 0,
           CalendarDays,
           "var(--tone-warning)",
@@ -1310,7 +1314,7 @@ function DashboardPage({ dashboard, isLoading, onNavigate }) {
             "var(--tone-brand)",
           ],
           [
-            "Enrolled students",
+            "Class enrollments",
             classes.reduce(
               (count, campusClass) =>
                 count + (campusClass.enrolledStudents?.length || 0),
@@ -1373,7 +1377,7 @@ function DashboardPage({ dashboard, isLoading, onNavigate }) {
                     ? "Maintenance work"
                     : "Campus summary"
             }
-            subtitle="Information from your campus account"
+            subtitle={student ? "Your classes and campus updates" : faculty ? "Your teaching schedule and campus activity" : technician ? "Current work assigned to you" : "Live totals from CampusOS records"}
           />
           {isLoading ? <div className="content-skeleton"><i /><i /><i /></div> : classes.length ? (
             classes.map((campusClass) => (
@@ -1393,16 +1397,30 @@ function DashboardPage({ dashboard, isLoading, onNavigate }) {
                 </span>
               </div>
             ))
+          ) : technician ? (
+            <div className="dashboard-role-summary">
+              <strong>{dashboard.assignedMaintenance ? `${dashboard.assignedMaintenance} assigned maintenance ${dashboard.assignedMaintenance === 1 ? "issue" : "issues"}` : "No maintenance issues are assigned to you."}</strong>
+              <p>{dashboard.pendingVerification ? `${dashboard.pendingVerification} repair ${dashboard.pendingVerification === 1 ? "is" : "are"} awaiting faculty verification.` : "Assigned work and repair updates appear here."}</p>
+            </div>
+          ) : dashboard.role === "admin" ? (
+            <div className="dashboard-role-summary">
+              <strong>{dashboard.classes ? `${dashboard.classes} class records` : "No classes have been added yet."}</strong>
+              <p>{dashboard.rooms} rooms, {dashboard.bookings} bookings and {dashboard.notices} notices recorded.</p>
+            </div>
           ) : (
             <div className="empty">
               No classes are assigned to your account yet.
             </div>
           )}
-          {!student && !faculty && (
+          {technician ? (
+            <button className="viewall" onClick={() => onNavigate("Complaints")}>
+              View assigned complaints <ArrowUpRight size={15} />
+            </button>
+          ) : dashboard.role === "admin" ? (
             <button className="viewall" onClick={() => onNavigate("Classes")}>
               Manage classes <ArrowUpRight size={15} />
             </button>
-          )}
+          ) : null}
         </div>
         <div className="panel glance">
           <PanelHeading
@@ -1445,7 +1463,7 @@ function DashboardPage({ dashboard, isLoading, onNavigate }) {
                 <strong>{record.campusClass?.courseName || "Class"}</strong>
                 <small>{record.date}</small>
               </span>
-              <em>{record.status}</em>
+              <StatusBadge status={record.status} />
             </div>
           ))}
           {!dashboard.attendance?.length && (

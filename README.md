@@ -2,6 +2,8 @@
 
 CampusOS is a role-aware campus management app using React, Vite, Tailwind CSS, Express, JWT, and MongoDB.
 
+For the complete backend API reference, including request/response shapes, authorization, filters, errors, and examples, see [docs/API.md](docs/API.md).
+
 ## Requirements
 
 - Node.js 20.19+ or 22.12+, with npm
@@ -152,8 +154,6 @@ Then sign in separately with an admin, faculty, and student account to review th
 
 ## API map
 
-All endpoints are prefixed with `/api`. Authentication: `/auth/register`, `/auth/login`, `/auth/profile`. Protected resources: `/students`, `/faculty`, `/classes`, `/attendance`, `/rooms`, `/bookings`, `/notices`, `/complaints`, `/notifications`, `/activity`, and `/dashboard`. Protected requests use `Authorization: Bearer <token>`.
+All routes are prefixed with `/api`. The complete endpoint-by-endpoint documentation is in [docs/API.md](docs/API.md). Major modules are authentication, admin/user provisioning, students, faculty, rooms/recommendations, bookings, classes, complaints/maintenance, notifications, activity, attendance, notices, dashboards, analytics and room forecasts. Protected requests use `Authorization: Bearer <JWT>`.
 
-Collection endpoints accept optional `page` and `limit` query parameters (limit 1–100) and return the existing array response with `X-Total-Count`, `X-Page`, `X-Page-Size`, and `X-Total-Pages` headers. Omitting these parameters preserves the existing unpaginated response contract.
-
-MongoDB must be reachable before the backend starts. After the initial administrator is set up, create rooms and faculty accounts before creating classes. This project does not seed demo rooms or classes.
+MongoDB must be reachable before the backend starts. After the initial administrator is set up, create rooms and faculty accounts before creating classes. This project does not seed demo rooms or classes. Follow the setup and database migration instructions above before using transaction-backed APIs in an existing deployment.

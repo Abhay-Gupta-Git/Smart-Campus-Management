@@ -1008,7 +1008,7 @@ header {
   align-items: center;
   justify-content: center;
   gap: 8px;
-  background: #7558dc;
+  background: var(--brand);
   color: white;
   border-radius: 7px;
   padding: 10px 15px;
@@ -1017,7 +1017,7 @@ header {
   box-shadow: 0 2px 6px rgb(49 95 189 / 16%);
 }
 .primary:hover {
-  background: #6346ce;
+  background: var(--brand-dark);
 }
 .cards {
   display: grid;
@@ -1173,16 +1173,16 @@ header {
   width: 17px;
 }
 .purple {
-  background: #f0ebff;
-  color: #775bda;
+  background: var(--brand-soft);
+  color: var(--brand-dark);
 }
 .amber {
-  background: #fff3e2;
-  color: #e6a03d;
+  background: #fff4e3;
+  color: var(--tone-warning);
 }
 .rose {
   background: #fff0f1;
-  color: #e07980;
+  color: var(--tone-danger);
 }
 .glance-row span {
   display: grid;
@@ -1202,10 +1202,10 @@ header {
   border-radius: 50%;
 }
 .green-dot {
-  background: #48b790;
+  background: var(--tone-success);
 }
 .blue-dot {
-  background: #659af0;
+  background: var(--tone-info);
 }
 .red-dot {
   background: #ee7479;
@@ -1226,7 +1226,7 @@ header {
   margin-bottom: 10px;
 }
 .activity .panelhead button {
-  color: #7356d8;
+  color: var(--brand-dark);
   font-size: 10px;
 }
 .activity-row {

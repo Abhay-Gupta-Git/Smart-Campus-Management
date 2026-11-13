@@ -29,6 +29,8 @@ function zeroBookingCounts() {
   return { total: 0, Pending: 0, Approved: 0, Rejected: 0, Cancelled: 0 };
 }
 
+const COMPLAINT_STATUSES = ["Open", "In progress", "Pending Verification", "Resolved", "Closed"];
+
 function makePeriods(window, range, observedPeriods) {
   if (!window) return observedPeriods;
   const periods = [];
@@ -144,10 +146,13 @@ async function getAnalytics(req, res) {
     const periods = makePeriods(window, range, observedPeriods);
     const bookingTrend = periods.map((period) => trendByPeriod.get(period) || { period, ...zeroBookingCounts() });
 
-    const complaints = { total: 0, Open: 0, "In progress": 0, Resolved: 0 };
+    const complaints = {
+      total: 0,
+      ...Object.fromEntries(COMPLAINT_STATUSES.map((status) => [status, 0])),
+    };
     for (const row of complaintRows) {
       complaints.total += row.count;
-      if (Object.hasOwn(complaints, row._id)) complaints[row._id] = row.count;
+      if (COMPLAINT_STATUSES.includes(row._id)) complaints[row._id] = row.count;
     }
 
     const attendance = { total: 0, present: 0, absent: 0, late: 0, attendanceRate: 0 };

@@ -1,7 +1,10 @@
 const Booking = require("../models/Booking");
+const CampusClass = require("../models/CampusClass");
+const Complaint = require("../models/Complaint");
 const Room = require("../models/Room");
 
 const ROOM_TYPES = ["Classroom", "Lecture Hall", "Laboratory", "Meeting Room", "Auditorium", "Other"];
+const WEEKDAYS = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"];
 
 function validDate(date) {
   if (typeof date !== "string" || !/^\d{4}-\d{2}-\d{2}$/.test(date)) return false;
@@ -12,6 +15,17 @@ function validDate(date) {
 
 function validTime(time) {
   return typeof time === "string" && /^([01]\d|2[0-3]):[0-5]\d$/.test(time);
+}
+
+function overlaps(start, end, otherStart, otherEnd) {
+  return start < otherEnd && end > otherStart;
+}
+
+function conflictsWithRequestedTime(item, startTime, endTime) {
+  // Invalid legacy schedule data is treated as unavailable because its actual
+  // conflict window cannot be determined safely.
+  if (!item || !validTime(item.startTime) || !validTime(item.endTime) || item.startTime >= item.endTime) return true;
+  return overlaps(startTime, endTime, item.startTime, item.endTime);
 }
 
 async function recommendRooms(req, res) {
@@ -36,23 +50,45 @@ async function recommendRooms(req, res) {
   }
 
   try {
-    const rooms = await Room.find({ available: true, capacity: { $gte: capacity }, type }).lean();
+    const rooms = await Room.find({ available: true, capacity: { $gte: capacity }, type })
+      .select("name building floor capacity type facilities equipment maintenanceHold available createdAt updatedAt")
+      .lean();
     if (rooms.length === 0) {
       return res.json({ recommendations: [], count: 0, message: "No rooms match the requested capacity and room type." });
     }
 
-    const conflicts = await Booking.find({
-      room: { $in: rooms.map((room) => room._id) },
-      date,
-      status: "Approved",
-      startTime: { $lt: endTime },
-      endTime: { $gt: startTime },
-    }).distinct("room");
-    const conflictingIds = new Set(conflicts.map((id) => id.toString()));
+    const healthyRooms = rooms.filter((room) => {
+      if (room.maintenanceHold === true || (room.equipment != null && !Array.isArray(room.equipment))) return false;
+      return !(room.equipment || []).some((item) => !item || item.status !== "Working");
+    });
+    if (healthyRooms.length === 0) {
+      return res.json({ recommendations: [], count: 0, message: "No suitable room is available for this time slot." });
+    }
+
+    const roomIds = healthyRooms.map((room) => room._id);
+    const weekday = WEEKDAYS[new Date(`${date}T00:00:00.000Z`).getUTCDay()];
+    const [approvedBookings, classSchedules, activeComplaintRoomIds] = await Promise.all([
+      Booking.find({ room: { $in: roomIds }, date, status: "Approved" })
+        .select("room startTime endTime")
+        .lean(),
+      CampusClass.find({ room: { $in: roomIds }, day: weekday })
+        .select("room startTime endTime")
+        .lean(),
+      Complaint.distinct("room", { room: { $in: roomIds }, status: { $ne: "Closed" } }),
+    ]);
+
+    const unavailableIds = new Set(activeComplaintRoomIds.map((id) => id.toString()));
+    for (const booking of approvedBookings) {
+      if (conflictsWithRequestedTime(booking, startTime, endTime)) unavailableIds.add(booking.room.toString());
+    }
+    for (const schedule of classSchedules) {
+      if (conflictsWithRequestedTime(schedule, startTime, endTime)) unavailableIds.add(schedule.room.toString());
+    }
+
     const preferredBuilding = building.toLocaleLowerCase();
 
-    const recommendations = rooms
-      .filter((room) => !conflictingIds.has(room._id.toString()))
+    const recommendations = healthyRooms
+      .filter((room) => !unavailableIds.has(room._id.toString()))
       .map((room) => ({
         ...room,
         capacityFit: room.capacity - capacity,
