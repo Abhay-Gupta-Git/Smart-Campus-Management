@@ -414,13 +414,15 @@ function App() {
     setIsLoading(true);
     setListError("");
     setRecords([]);
-    setTotalRecords(0);
     try {
       const params = new URLSearchParams();
       Object.entries(query || {}).forEach(([key, value]) => {
         if (value !== undefined && value !== null && value !== "") params.set(key, value);
       });
       const result = await requestApi(`${endpoint}?${params.toString()}`, token, { signal, withMeta: true });
+      // An aborted request may still settle while a newer request is in flight.
+      // Only the currently active request may update list data or pagination.
+      if (signal.aborted || activeListRequest.current !== controller) return;
       if (!Array.isArray(result.data)) {
         throw new Error("The server returned an unexpected list response. Refresh the page or contact support.");
       }
