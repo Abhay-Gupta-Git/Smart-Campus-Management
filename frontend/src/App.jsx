@@ -67,10 +67,23 @@ async function requestApi(path, token, options = {}) {
     },
   });
 
-  const responseData = await response.json().catch(() => ({}));
+  const responseText = await response.text();
+  let responseData;
+  try {
+    responseData = responseText ? JSON.parse(responseText) : null;
+  } catch {
+    const contentType = response.headers.get("content-type") || "unknown content type";
+    const error = new Error(
+      response.ok
+        ? `The server returned a non-JSON response for ${path} (${contentType}). Check the API URL and server response.`
+        : `Request failed with status ${response.status} (${contentType}).`,
+    );
+    error.status = response.status;
+    throw error;
+  }
 
   if (!response.ok) {
-    const error = new Error(responseData.message || "Request failed");
+    const error = new Error(responseData?.message || `Request failed with status ${response.status}.`);
     error.status = response.status;
     throw error;
   }
@@ -79,8 +92,11 @@ async function requestApi(path, token, options = {}) {
 
   const listPayload = getListPayload(responseData);
   if (!listPayload) {
+    const received = responseData && typeof responseData === "object"
+      ? Array.isArray(responseData) ? "an array" : `an object with keys: ${Object.keys(responseData).slice(0, 8).join(", ") || "none"}`
+      : `${responseData === null ? "an empty body" : typeof responseData}`;
     const error = new Error(
-      "The server returned an unexpected list response. Refresh the page or contact support.",
+      `The server returned an unexpected list response for ${path}; expected an array or a supported list envelope, received ${received}.`,
     );
     error.name = "InvalidListResponseError";
     throw error;
@@ -124,23 +140,35 @@ function getListPayload(payload) {
   if (Array.isArray(payload)) return { records: payload, pagination: {} };
   if (!payload || typeof payload !== "object") return null;
 
-  const candidates = [payload.data, payload.records, payload.items];
-  for (const candidate of candidates) {
-    if (Array.isArray(candidate)) {
-      return { records: candidate, pagination: payload.pagination || payload.meta || {} };
+  // The CampusOS API returns arrays directly. The recursive envelope support
+  // covers clients/proxies that wrap that response in data/result/resource keys.
+  // It deliberately searches only known list and wrapper fields; arbitrary
+  // object arrays (for example dashboard widgets) are not treated as records.
+  const collectionKeys = new Set([
+    "data", "records", "items", "results", "students", "faculty", "technicians",
+    "classes", "attendance", "rooms", "bookings", "notices", "complaints",
+    "activities", "notifications",
+  ]);
+  const wrapperKeys = new Set(["response", "result", "payload"]);
+  const findRecords = (value, depth = 0) => {
+    if (Array.isArray(value)) return { records: value, pagination: {} };
+    if (!value || typeof value !== "object" || depth > 4) return null;
+    const pagination = value.pagination || value.meta?.pagination || value.meta || {};
+    for (const key of collectionKeys) {
+      if (Array.isArray(value[key])) return { records: value[key], pagination };
     }
-    if (candidate && typeof candidate === "object") {
-      for (const key of ["data", "records", "items"]) {
-        if (Array.isArray(candidate[key])) {
-          return {
-            records: candidate[key],
-            pagination: candidate.pagination || candidate.meta || payload.pagination || payload.meta || {},
-          };
-        }
+    for (const key of [...collectionKeys, ...wrapperKeys]) {
+      const found = findRecords(value[key], depth + 1);
+      if (found) {
+        return {
+          records: found.records,
+          pagination: Object.keys(found.pagination || {}).length ? found.pagination : pagination,
+        };
       }
     }
-  }
-  return null;
+    return null;
+  };
+  return findRecords(payload);
 }
 
 function requireRecordArray(value, label) {
