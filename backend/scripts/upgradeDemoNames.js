@@ -409,7 +409,8 @@ async function runMigration({ mode = "dry-run", uri = process.env.MONGO_URI, mon
   try {
     await connectTargetDatabase(mongooseClient, uri);
     if (mode === "dry-run") {
-      return runDryRun(() => makePlan(null));
+      // Await inside the try so the finally block cannot disconnect during validation.
+      return await runDryRun(() => makePlan(null));
     }
     const session = await mongooseClient.startSession();
     let report;

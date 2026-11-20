@@ -127,6 +127,7 @@ test("runMigration awaits a connected campusos_demo_v2 rs0 client before plannin
     mongooseClient: client,
     nodeEnv: "test",
     makePlan: async () => {
+      await new Promise((resolve) => setImmediate(resolve));
       events.push("database-operation");
       assert.equal(client.connection.readyState, 1);
       return { database: "campusos_demo_v2", countsByRole: {}, nameChanges: [], bookingChanges: [], activityChanges: [], uniqueNames: {} };
