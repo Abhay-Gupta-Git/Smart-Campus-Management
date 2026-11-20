@@ -5,6 +5,7 @@ const campusClassSchema = new mongoose.Schema(
     courseName: { type: String, required: true, trim: true },
     courseCode: { type: String, required: true, trim: true, uppercase: true },
     section: { type: String, required: true, trim: true },
+    department: { type: String, trim: true, maxlength: 120, default: null },
     faculty: {
       type: mongoose.Schema.Types.ObjectId,
       ref: "User",

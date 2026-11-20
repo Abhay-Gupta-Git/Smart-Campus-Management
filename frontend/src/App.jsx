@@ -197,7 +197,7 @@ function normalizeDashboardPayload(payload) {
   const roleLists = {
     student: ["classes", "attendance", "notices"],
     faculty: ["classes", "bookings", "notices"],
-    admin: ["recentNotices"],
+    admin: ["recentNotices", "buildingSummaries", "maintenanceAlerts", "recentActivity"],
     technician: [],
   };
   if (!Object.hasOwn(roleLists, dashboard.role)) throw new Error("Dashboard response has an unsupported role.");
@@ -212,6 +212,11 @@ function normalizeAnalyticsPayload(payload) {
   for (const field of ["totals", "bookings", "complaints", "attendance"]) requireObject(analytics[field], `Analytics ${field}`);
   requireRecordArray(analytics.bookingTrend, "Analytics booking trend");
   requireRecordArray(analytics.roomUsage, "Analytics room usage");
+  for (const field of ["departmentDistribution", "yearSemesterDistribution", "enrollmentTrend"]) requireRecordArray(analytics.students?.[field], `Student analytics ${field}`);
+  for (const field of ["dailyTrend", "weeklyTrend", "monthlyTrend"]) requireRecordArray(analytics.attendance?.[field], `Attendance analytics ${field}`);
+  for (const field of ["dailyTrend", "weeklyTrend", "monthlyTrend", "buildingDistribution", "peakHours", "peakDays"]) requireRecordArray(analytics.bookingAnalytics?.[field], `Booking analytics ${field}`);
+  for (const field of ["byBuilding", "equipmentFaults"]) requireRecordArray(analytics.rooms?.[field], `Room analytics ${field}`);
+  for (const field of ["byBuilding", "byPriority", "trend", "technicianWorkload"]) requireRecordArray(analytics.complaints?.[field], `Complaint analytics ${field}`);
   return analytics;
 }
 
@@ -261,8 +266,46 @@ function App() {
   const [pendingDelete, setPendingDelete] = useState(null);
   const [isDeleting, setIsDeleting] = useState(false);
   const [notificationTarget, setNotificationTarget] = useState(null);
+  const [logoutMessage, setLogoutMessage] = useState("");
+  const [analyticsReturn, setAnalyticsReturn] = useState(false);
   const activeListRequest = useRef(null);
   const dashboardRefreshRequest = useRef(null);
+  const logoutPending = useRef(false);
+
+  useEffect(() => {
+    const clearRestoredSession = () => {
+      if (localStorage.getItem("token")) return;
+      setToken("");
+      setUser(null);
+      setSessionReady(true);
+      setDashboard({});
+      setDashboardError("");
+      setRecords([]);
+      setTotalRecords(0);
+      setListError("");
+      setListQuery({ page: 1, limit: 10 });
+      setSearchText("");
+      setTechnicians([]);
+      setNotificationTarget(null);
+      setAnalyticsReturn(false);
+      setPage("Overview");
+      setErrorMessage("");
+      setSuccessMessage("");
+      setIsModalOpen(false);
+      setEditingRecord(null);
+      setInspectionRoom(null);
+      setPendingDelete(null);
+      activeListRequest.current?.abort();
+      activeListRequest.current = null;
+      dashboardRefreshRequest.current = null;
+    };
+    window.addEventListener("pageshow", clearRestoredSession);
+    window.addEventListener("storage", clearRestoredSession);
+    return () => {
+      window.removeEventListener("pageshow", clearRestoredSession);
+      window.removeEventListener("storage", clearRestoredSession);
+    };
+  }, []);
   const refreshDashboard = useCallback(async ({ afterMutation = false } = {}) => {
     if (!token) return;
     const current = dashboardRefreshRequest.current;
@@ -304,10 +347,18 @@ function App() {
   }, [token]);
   const handleListQueryChange = useCallback((query) => setListQuery(query), []);
   const navigateToPage = useCallback((nextPage) => {
+    setAnalyticsReturn(false);
     setNotificationTarget(null);
     setListQuery({ page: 1, limit: 10 });
     setSearchText("");
     setPage(nextPage);
+  }, []);
+  const navigateToFilteredPage = useCallback((nextPage, query) => {
+    setAnalyticsReturn(true);
+    setNotificationTarget(null);
+    setSearchText("");
+    setPage(nextPage);
+    setListQuery({ page: 1, limit: 10, ...query });
   }, []);
   const navigateToNotification = useCallback((notification) => {
     const entityType = notification.entityType || (notification.complaint ? "complaint" : null);
@@ -440,6 +491,7 @@ function App() {
   }
 
   function handleLogin(loginToken, signedInUser) {
+    setLogoutMessage("");
     localStorage.setItem("token", loginToken);
     localStorage.setItem("user", JSON.stringify(signedInUser));
     setToken(loginToken);
@@ -448,22 +500,55 @@ function App() {
   }
 
   function clearLocalSession() {
+    setAnalyticsReturn(false);
+    activeListRequest.current?.abort();
+    activeListRequest.current = null;
     localStorage.removeItem("token");
     localStorage.removeItem("user");
     setToken("");
     setUser(null);
     dashboardRefreshRequest.current = null;
     setDashboard({});
+    setDashboardError("");
     setIsDashboardLoading(false);
+    setRecords([]);
+    setTotalRecords(0);
+    setListError("");
+    setListQuery({ page: 1, limit: 10 });
+    setSearchText("");
+    setTechnicians([]);
+    setNotificationTarget(null);
+    setPage("Overview");
+    setIsSidebarOpen(false);
+    setErrorMessage("");
+    setSuccessMessage("");
+    setIsModalOpen(false);
+    setEditingRecord(null);
+    setInspectionRoom(null);
+    setPendingDelete(null);
     setSessionReady(true);
   }
 
-  function handleLogout() {
+  async function handleLogout() {
+    if (logoutPending.current) return;
+    logoutPending.current = true;
     const activeToken = token;
-    clearLocalSession();
+    let logoutFailure = "";
     if (activeToken) {
-      void requestApi("/auth/logout", activeToken, { method: "POST" }).catch(() => {});
+      const controller = new AbortController();
+      const timeout = window.setTimeout(() => controller.abort(), 8000);
+      try {
+        await requestApi("/auth/logout", activeToken, { method: "POST", signal: controller.signal });
+      } catch (error) {
+        const reason = error.name === "AbortError" ? "the server did not respond in time" : error.message;
+        logoutFailure = `Signed out on this device. Server token invalidation could not be confirmed (${reason}). If the token remains active elsewhere, retry after reconnecting.`;
+      } finally {
+        window.clearTimeout(timeout);
+      }
     }
+    clearLocalSession();
+    setLogoutMessage(logoutFailure);
+    logoutPending.current = false;
   }
 
   async function createRecord(record) {
@@ -515,7 +600,7 @@ function App() {
     if (token && !sessionReady) {
       return <div className="auth">Checking your secure session...</div>;
     }
-    return <AuthenticationPage onLogin={handleLogin} />;
+    return <AuthenticationPage onLogin={handleLogin} logoutMessage={logoutMessage} />;
   }
 
   const canCreateRecord = canCreateResource(page, user?.role);
@@ -542,9 +627,11 @@ function App() {
           onMenu={() => setIsSidebarOpen((open) => !open)}
           isSidebarOpen={isSidebarOpen}
           onNavigateNotification={navigateToNotification}
+          onLogout={handleLogout}
         />
 
         <section className="content">
+          {analyticsReturn && <button className="analytics-return-button" type="button" onClick={() => { setAnalyticsReturn(false); navigateToPage("Analytics"); }}>← Back to analytics</button>}
           <PageHeading
             page={page}
             user={user}
@@ -576,7 +663,7 @@ function App() {
           {page === "Overview" ? (
             <DashboardPage dashboard={dashboard} dashboardError={dashboardError} isLoading={isDashboardLoading} onNavigate={navigateToPage} onRetry={() => refreshDashboard()} />
           ) : page === "Analytics" && user?.role === "admin" ? (
-            <AnalyticsDashboardPage token={token} />
+            <AnalyticsDashboardPage token={token} onDrilldown={navigateToFilteredPage} />
           ) : page === "Room recommendations" ? (
             <RoomRecommendationPage token={token} />
           ) : (
@@ -584,6 +671,7 @@ function App() {
               key={`${page}:${notificationTarget?.page === page ? notificationTarget.id : ""}`}
               page={page}
               initialRecordId={notificationTarget?.page === page ? notificationTarget.id : ""}
+              initialQuery={listQuery}
               records={records}
               totalRecords={totalRecords}
               listError={listError}
@@ -805,8 +893,30 @@ function Sidebar({ activePage, dashboard, user, onNavigate, onLogout, isOpen, on
   );
 }
 
-function TopBar({ page, user, token, searchText, onSearch, onMenu, isSidebarOpen, onNavigateNotification }) {
+function TopBar({ page, user, token, searchText, onSearch, onMenu, isSidebarOpen, onNavigateNotification, onLogout }) {
   const searchInput = useRef(null);
+  const accountMenuRef = useRef(null);
+  const accountButtonRef = useRef(null);
+  const [isAccountMenuOpen, setIsAccountMenuOpen] = useState(false);
+
+  useEffect(() => {
+    if (!isAccountMenuOpen) return undefined;
+    const closeFromOutside = (event) => {
+      if (!accountMenuRef.current?.contains(event.target)) setIsAccountMenuOpen(false);
+    };
+    const closeFromEscape = (event) => {
+      if (event.key === "Escape") {
+        setIsAccountMenuOpen(false);
+        accountButtonRef.current?.focus();
+      }
+    };
+    document.addEventListener("pointerdown", closeFromOutside);
+    document.addEventListener("keydown", closeFromEscape);
+    return () => {
+      document.removeEventListener("pointerdown", closeFromOutside);
+      document.removeEventListener("keydown", closeFromEscape);
+    };
+  }, [isAccountMenuOpen]);
 
   useEffect(() => {
     function focusSearch(event) {
@@ -839,7 +949,20 @@ function TopBar({ page, user, token, searchText, onSearch, onMenu, isSidebarOpen
           <kbd>Ctrl K</kbd>
         </div>
         <NotificationBell token={token} onNavigate={onNavigateNotification} />
-        <b className="userdot">{user?.name?.[0] || "A"}</b>
+        <div className="account-menu-wrap" ref={accountMenuRef}>
+          <button ref={accountButtonRef} className="userdot" type="button" aria-label="Open account menu" aria-haspopup="menu" aria-expanded={isAccountMenuOpen} onClick={() => setIsAccountMenuOpen((open) => !open)}>
+            {user?.name?.[0] || "A"}
+          </button>
+          {isAccountMenuOpen && <div className="account-menu" role="menu" aria-label="Account menu">
+            <div className="account-menu-details">
+              <span className="account-menu-label">Account details</span>
+              <strong>{user?.name || "Campus account"}</strong>
+              <span>{user?.email || ""}</span>
+              <small>{user?.role ? `${user.role[0].toUpperCase()}${user.role.slice(1)}` : "Account"}</small>
+            </div>
+            <button type="button" role="menuitem" onClick={() => { setIsAccountMenuOpen(false); onLogout(); }}><LogOut size={16} /> Sign out</button>
+          </div>}
+        </div>
       </div>
     </header>
   );
@@ -1017,8 +1140,10 @@ function PageHeading({ page, user, canCreateRecord, onCreate }) {
   );
 }
 
-function AnalyticsDashboardPage({ token }) {
+function AnalyticsDashboardPage({ token, onDrilldown }) {
   const [range, setRange] = useState("30d");
+  const [trendGranularity, setTrendGranularity] = useState("daily");
+  const [bookingGranularity, setBookingGranularity] = useState("daily");
   const [analytics, setAnalytics] = useState(null);
   const [error, setError] = useState("");
   const [isLoading, setIsLoading] = useState(true);
@@ -1041,31 +1166,19 @@ function AnalyticsDashboardPage({ token }) {
   const campusMetrics = [
     ["Students", analytics.totals.students, Users, "var(--tone-brand)"],
     ["Faculty", analytics.totals.faculty, ClipboardCheck, "var(--tone-success)"],
-    ["Rooms", analytics.totals.rooms, DoorOpen, "var(--tone-warning)"],
-    ["Classes", analytics.totals.classes, CalendarDays, "var(--tone-info)"],
+    ["Technicians", analytics.totals.technicians, Wrench, "var(--tone-info)"],
+    ["Buildings", analytics.totals.buildings, Building2, "var(--tone-warning)"],
+    ["Rooms", analytics.totals.rooms, DoorOpen, "var(--tone-info)"],
+    ["Classes", analytics.totals.classes, CalendarDays, "var(--tone-brand)"],
   ];
-  const bookingMetrics = [
-    ["Total bookings", analytics.bookings.total, CalendarDays, "var(--tone-info)"],
-    ["Pending", analytics.bookings.Pending, Clock3, "var(--tone-warning)"],
-    ["Approved", analytics.bookings.Approved, CheckCircle2, "var(--tone-success)"],
-    ["Rejected", analytics.bookings.Rejected, AlertCircle, "var(--tone-danger)"],
-    ["Cancelled", analytics.bookings.Cancelled, CalendarDays, "var(--tone-neutral)"],
-  ];
-  const complaintMetrics = [
-    ["Total complaints", analytics.complaints.total, MessageSquareWarning, "var(--tone-info)"],
-    ["Open", analytics.complaints.Open, AlertCircle, "var(--tone-danger)"],
-    ["In progress", analytics.complaints["In progress"], Clock3, "var(--tone-warning)"],
-    ["Pending verification", analytics.complaints["Pending Verification"], Clock3, "var(--tone-info)"],
-    ["Resolved", analytics.complaints.Resolved, CheckCircle2, "var(--tone-success)"],
-    ["Closed", analytics.complaints.Closed, CheckCircle2, "var(--tone-success)"],
-  ];
-  const attendanceMetrics = [
-    ["Attendance records", analytics.attendance.total, ClipboardCheck, "var(--tone-info)"],
-    ["Present", analytics.attendance.present, CheckCircle2, "var(--tone-success)"],
-    ["Late", analytics.attendance.late, Clock3, "var(--tone-warning)"],
-    ["Absent", analytics.attendance.absent, AlertCircle, "var(--tone-danger)"],
-    ["Attendance rate", `${analytics.attendance.attendanceRate}%`, BarChart3, "var(--tone-brand)"],
-  ];
+  const periodRange = analytics.dateWindow ? {
+    dateFrom: analytics.dateWindow.startDate,
+    dateTo: analytics.dateWindow.endDate,
+  } : {};
+  const complaintRange = analytics.dateWindow ? {
+    createdAtFrom: analytics.dateWindow.startDate,
+    createdAtTo: analytics.dateWindow.endDate,
+  } : {};
 
   return (
     <div className="analytics-page">
@@ -1080,83 +1193,214 @@ function AnalyticsDashboardPage({ token }) {
       </div>
       {error && <div className="error" role="alert">{error}</div>}
 
-      <AnalyticsMetricSection title="Campus totals" metrics={campusMetrics} />
-      <AnalyticsMetricSection title={`Bookings · ${rangeLabel(range)}`} metrics={bookingMetrics} />
-
+      <AnalyticsMetricSection title="Campus overview" metrics={campusMetrics} />
+      <AnalyticsGroupHeading title="Academic analytics" description="Student distribution, attendance and enrollment patterns" />
       <div className="analytics-grid">
         <section className="panel analytics-chart-panel">
-          <PanelHeading
-            title="Booking trends"
-            subtitle={`${analytics.periodGranularity === "month" ? "Monthly" : "Daily"} booking dates, grouped by status`}
-          />
-          <BookingTrendChart data={analytics.bookingTrend} granularity={analytics.periodGranularity} />
+          <PanelHeading title="Students by department" subtitle="Current enrolled student records" />
+          {analytics.students.departmentDistribution.length ? <AnalyticsBars rows={analytics.students.departmentDistribution.map((row) => [row.department, row.students, "var(--tone-brand)"])} /> : <div className="analytics-empty">No student department records are available.</div>}
         </section>
         <section className="panel analytics-chart-panel">
-          <PanelHeading title={`Complaints · ${rangeLabel(range)}`} subtitle="Current status of complaints created in this period" />
-          {analytics.complaints.total ? (
-            <AnalyticsBars rows={[
-              ["Open", analytics.complaints.Open, "var(--tone-danger)"],
-              ["In progress", analytics.complaints["In progress"], "var(--tone-warning)"],
-              ["Pending Verification", analytics.complaints["Pending Verification"], "var(--tone-info)"],
-              ["Resolved", analytics.complaints.Resolved, "var(--tone-success)"],
-              ["Closed", analytics.complaints.Closed, "var(--tone-success)"],
-            ]} />
-          ) : <div className="analytics-empty">No complaint records for this period.</div>}
+          <PanelHeading title="Year and semester distribution" subtitle="Current values grouped from student academic records" />
+          {analytics.students.yearSemesterDistribution.length ? <AnalyticsBars rows={analytics.students.yearSemesterDistribution.map((row) => [`Year ${row.year} · Semester ${row.semester}`, row.students, ["#315fce", "#12a594", "#e49b36", "#8a67ca"][Math.max(0, row.year - 1) % 4]])} /> : <div className="analytics-empty">No year and semester data is available.</div>}
         </section>
       </div>
 
-      <section className="panel analytics-usage-panel">
-        <PanelHeading title="Room usage" subtitle={`Approved bookings and scheduled hours · ${rangeLabel(range)}`} />
-        {analytics.roomUsage.length ? (
-          <div className="analytics-table-wrap">
-            <table className="analytics-table">
-              <thead><tr><th>Room</th><th>Building</th><th>Type</th><th>Approved bookings</th><th>Booked hours</th></tr></thead>
-              <tbody>{analytics.roomUsage.map((room) => (
-                <tr key={room.roomId}>
-                  <td><strong>{room.name}</strong></td><td>{room.building}</td><td>{room.type}</td>
-                  <td>{room.approvedBookings}</td><td>{room.bookedHours}</td>
-                </tr>
-              ))}</tbody>
-            </table>
-          </div>
-        ) : <div className="analytics-empty">No approved room bookings for this period.</div>}
+      <AnalyticsMetricSection title={`Attendance · ${rangeLabel(range)}`} metrics={[
+        ["Attendance records", analytics.attendance.total, ClipboardCheck, "var(--tone-info)"],
+        ["Present", analytics.attendance.present, CheckCircle2, "var(--tone-success)"],
+        ["Late", analytics.attendance.late, Clock3, "var(--tone-warning)"],
+        ["Absent", analytics.attendance.absent, AlertCircle, "var(--tone-danger)"],
+        ["Attendance rate", `${analytics.attendance.attendanceRate}%`, BarChart3, "var(--tone-brand)"],
+      ]} />
+      <section className="panel analytics-chart-panel analytics-wide-panel">
+        <div className="analytics-chart-heading">
+          <PanelHeading title="Attendance patterns" subtitle={`Daily status trends · ${rangeLabel(range)}`} />
+          <select aria-label="Attendance trend granularity" value={trendGranularity} onChange={(event) => setTrendGranularity(event.target.value)}>
+            <option value="daily">Daily</option><option value="weekly">Weekly</option><option value="monthly">Monthly</option>
+          </select>
+        </div>
+        <AnalyticsTrendChart data={analytics.attendance[`${trendGranularity}Trend`]} series={[
+          { key: "present", label: "Present", color: "#16a37a" },
+          { key: "late", label: "Late", color: "#e39b32" },
+          { key: "absent", label: "Absent", color: "#df5b63" },
+        ]} onPoint={trendGranularity === "daily" ? (period, status) => onDrilldown("Attendance", { date: period, ...(status ? { status } : {}) }) : undefined} />
       </section>
 
-      <AnalyticsMetricSection title={`Complaint totals · ${rangeLabel(range)}`} metrics={complaintMetrics} />
-      <AnalyticsMetricSection title={`Attendance · ${rangeLabel(range)}`} metrics={attendanceMetrics} />
+      <div className="analytics-grid">
+        <section className="panel analytics-chart-panel analytics-wide-panel">
+          <PanelHeading title="Student enrollment over time" subtitle="Monthly student account creation from records" />
+          <AnalyticsTrendChart data={analytics.students.enrollmentTrend} series={[{ key: "students", label: "Students", color: "#4361d8" }]} area />
+        </section>
+      </div>
+
+      <AnalyticsGroupHeading title="Room and booking analytics" description={`Booking requests and room usage · ${rangeLabel(range)}`} />
+      <AnalyticsMetricSection title={`Bookings · ${rangeLabel(range)}`} metrics={[
+        ["Total requests", analytics.bookings.total, CalendarDays, "var(--tone-info)"],
+        ["Pending", analytics.bookings.Pending, Clock3, "var(--tone-warning)"],
+        ["Approved", analytics.bookings.Approved, CheckCircle2, "var(--tone-success)"],
+        ["Rejected", analytics.bookings.Rejected, AlertCircle, "var(--tone-danger)"],
+        ["Cancelled", analytics.bookings.Cancelled, CalendarDays, "var(--tone-neutral)"],
+      ]} />
+      <div className="analytics-grid">
+        <section className="panel analytics-chart-panel analytics-wide-panel">
+          <div className="analytics-chart-heading"><PanelHeading title="Booking activity" subtitle={`Status by booking date · ${rangeLabel(range)}`} /><select aria-label="Booking trend granularity" value={bookingGranularity} onChange={(event) => setBookingGranularity(event.target.value)}><option value="daily">Daily</option><option value="weekly">Weekly</option><option value="monthly">Monthly</option></select></div>
+          <BookingTrendChart data={analytics.bookingAnalytics[`${bookingGranularity}Trend`]} granularity={bookingGranularity === "monthly" ? "month" : bookingGranularity} onPoint={(period, status) => {
+            const query = { ...periodRange, ...(status ? { status } : {}) };
+            if (bookingGranularity === "daily") query.date = period;
+            else if (bookingGranularity === "weekly") {
+              query.dateFrom = analytics.dateWindow && analytics.dateWindow.startDate > period ? analytics.dateWindow.startDate : period;
+              const end = new Date(`${period}T00:00:00.000Z`);
+              end.setUTCDate(end.getUTCDate() + 6);
+              const weekEnd = end.toISOString().slice(0, 10);
+              query.dateTo = analytics.dateWindow && analytics.dateWindow.endDate < weekEnd ? analytics.dateWindow.endDate : weekEnd;
+            } else {
+              const monthStart = `${period}-01`;
+              query.dateFrom = analytics.dateWindow && analytics.dateWindow.startDate > monthStart ? analytics.dateWindow.startDate : monthStart;
+              const end = new Date(Date.UTC(Number(period.slice(0, 4)), Number(period.slice(5, 7)), 0));
+              const monthEnd = end.toISOString().slice(0, 10);
+              query.dateTo = analytics.dateWindow && analytics.dateWindow.endDate < monthEnd ? analytics.dateWindow.endDate : monthEnd;
+            }
+            onDrilldown("Room bookings", query);
+          }} />
+        </section>
+        <section className="panel analytics-chart-panel">
+          <PanelHeading title="Bookings by building" subtitle="Approved room requests" />
+          {analytics.bookingAnalytics.buildingDistribution.length ? <AnalyticsBars onSelect={(query) => onDrilldown("Room bookings", query)} rows={analytics.bookingAnalytics.buildingDistribution.map((row) => [row.building, row.bookings, "#4169d8", { building: row.building, status: "Approved", ...periodRange }])} /> : <div className="analytics-empty">No approved booking data for this period.</div>}
+        </section>
+        <section className="panel analytics-chart-panel">
+          <PanelHeading title="Peak booking hours" subtitle="Requests grouped by starting hour" />
+          {analytics.bookingAnalytics.peakHours.length ? <PeakBookingHoursChart data={analytics.bookingAnalytics.peakHours} onSelect={(hour) => onDrilldown("Room bookings", { startHour: hour, ...periodRange })} /> : <div className="analytics-empty">No booking data for this period.</div>}
+        </section>
+        <section className="panel analytics-chart-panel">
+          <PanelHeading title="Bookings by weekday" subtitle="Requests by scheduled day" />
+          {analytics.bookingAnalytics.peakDays.length ? <AnalyticsBars rows={analytics.bookingAnalytics.peakDays.map((row) => [row.day, row.bookings, "#8a67ca"])} /> : <div className="analytics-empty">No booking data for this period.</div>}
+        </section>
+      </div>
+
+      <AnalyticsGroupHeading title="Maintenance analytics" description={`Complaints, service status and room readiness · ${rangeLabel(range)}`} />
+      <AnalyticsMetricSection title={`Complaints · ${rangeLabel(range)}`} metrics={[
+        ["Complaints in period", analytics.complaints.total, MessageSquareWarning, "var(--tone-info)", { page: "Complaints", query: complaintRange }],
+        ["Open", analytics.complaints.Open, AlertCircle, "var(--tone-danger)", { page: "Complaints", query: { ...complaintRange, status: "Open" } }],
+        ["In progress", analytics.complaints["In progress"], Clock3, "var(--tone-warning)", { page: "Complaints", query: { ...complaintRange, status: "In progress" } }],
+        ["Pending verification", analytics.complaints["Pending Verification"], Clock3, "var(--tone-info)", { page: "Complaints", query: { ...complaintRange, status: "Pending Verification" } }],
+        ["Resolved or closed", analytics.complaints.Resolved + analytics.complaints.Closed, CheckCircle2, "var(--tone-success)"],
+        ...(range !== "all" ? [["All time", analytics.complaints.totalAllTime, ClipboardCheck, "var(--tone-neutral)", { page: "Complaints", query: {} }]] : []),
+        ["Avg resolution", `${analytics.complaints.averageResolutionHours} hrs`, Clock3, "var(--tone-brand)"],
+      ]} onMetric={(target) => onDrilldown(target.page, target.query)} />
+      <div className="analytics-grid">
+        <section className="panel analytics-chart-panel analytics-wide-panel">
+          <PanelHeading title="Complaint trend" subtitle="Requests created over time" />
+          <AnalyticsTrendChart data={analytics.complaints.trend} series={[{ key: "complaints", label: "Complaints", color: "#d55c68" }]} area onPoint={range !== "all" ? (period) => onDrilldown("Complaints", { ...complaintRange, createdAtFrom: period, createdAtTo: period }) : undefined} />
+        </section>
+        <section className="panel analytics-chart-panel">
+          <PanelHeading title="Complaints by priority" subtitle="Current reporting period" />
+          <AnalyticsDonut rows={analytics.complaints.byPriority.map((row) => ({ label: row.priority, value: row.complaints, query: { ...complaintRange, priority: row.priority } }))} onSelect={(query) => onDrilldown("Complaints", query)} />
+        </section>
+        <section className="panel analytics-chart-panel">
+          <PanelHeading title="Complaints by building" subtitle="Reported maintenance distribution" />
+          {analytics.complaints.byBuilding.length ? <AnalyticsBars onSelect={(query) => onDrilldown("Complaints", query)} rows={analytics.complaints.byBuilding.map((row) => [row.building, row.complaints, "#d55c68", { ...complaintRange, roomSearch: row.building }])} /> : <div className="analytics-empty">No complaint records for this period.</div>}
+        </section>
+      </div>
       <section className="panel analytics-chart-panel">
-        <PanelHeading title="Attendance breakdown" subtitle="Present and late count as attended" />
-        {analytics.attendance.total ? (
-          <AnalyticsBars rows={[
-            ["Present", analytics.attendance.present, "var(--tone-success)"],
-            ["Late", analytics.attendance.late, "var(--tone-warning)"],
-            ["Absent", analytics.attendance.absent, "var(--tone-danger)"],
-          ]} />
-        ) : <div className="analytics-empty">No attendance records for this period.</div>}
+        <PanelHeading title="Technician workload and completion" subtitle="Assigned maintenance tasks by technician" />
+        {analytics.complaints.technicianWorkload.length ? <div className="analytics-table-wrap"><table className="analytics-table"><thead><tr><th>Technician</th><th>Responsibility</th><th>Assigned</th><th>Active</th><th>Awaiting verification</th><th>Completed</th></tr></thead><tbody>{analytics.complaints.technicianWorkload.map((tech) => <tr key={tech.technicianId}><td><strong>{tech.name}</strong></td><td>{tech.department}</td><td>{tech.assigned}</td><td>{tech.active}</td><td>{tech.pendingVerification}</td><td>{tech.completed}</td></tr>)}</tbody></table></div> : <div className="analytics-empty">No technician assignments are recorded.</div>}
+      </section>
+
+      <div className="analytics-grid">
+        <section className="panel analytics-chart-panel">
+          <PanelHeading title="Room readiness by building" subtitle="Operational versus maintenance hold" />
+          {analytics.rooms.byBuilding.length ? <div className="analytics-bars">{analytics.rooms.byBuilding.map((row) => <div className="analytics-bar-row building-room-bar" key={row.building}><span>{row.building}</span><div className="building-room-track"><i style={{ width: `${row.operationalRooms / Math.max(1, row.rooms) * 100}%` }} /><b style={{ width: `${row.maintenanceRooms / Math.max(1, row.rooms) * 100}%` }} /></div><strong>{row.operationalRooms}/{row.rooms}</strong></div>)}</div> : <div className="analytics-empty">No room records are available.</div>}
+          <div className="analytics-legend"><span><i style={{ background: "#16a37a" }} />Operational</span><span><i style={{ background: "#df5b63" }} />Maintenance hold</span></div>
+        </section>
+        <section className="panel analytics-chart-panel">
+          <PanelHeading title="Equipment faults" subtitle="Non-operational equipment items" />
+          {analytics.rooms.equipmentFaults.length ? <AnalyticsBars rows={analytics.rooms.equipmentFaults.map((row) => [row.equipment, row.faults, "#df5b63"])} /> : <div className="analytics-empty">All inspected equipment is operational.</div>}
+        </section>
+      </div>
+      <section className="panel analytics-usage-panel">
+        <PanelHeading title="Room booking frequency" subtitle={`Approved bookings and booked hours · ${rangeLabel(range)}`} />
+        {analytics.roomUsage.length ? <div className="analytics-table-wrap"><table className="analytics-table"><thead><tr><th>Room</th><th>Building</th><th>Type</th><th>Bookings</th><th>Booked hours</th></tr></thead><tbody>{analytics.roomUsage.slice(0, 20).map((room) => <tr key={room.roomId}><td><strong>{room.name}</strong></td><td>{room.building}</td><td>{room.type}</td><td>{room.approvedBookings}</td><td>{room.bookedHours}</td></tr>)}</tbody></table></div> : <div className="analytics-empty">No approved room bookings for this period.</div>}
       </section>
       <RoomForecastPanel token={token} />
     </div>
   );
 }
 
+function AnalyticsTrendChart({ data, series, area = false, onPoint }) {
+  const safeData = Array.isArray(data) ? data.filter((row) => row && typeof row.period === "string") : [];
+  if (!safeData.length || safeData.every((row) => series.every((item) => !(Number(row[item.key]) > 0)))) {
+    return <div className="analytics-empty">No records are available for this trend.</div>;
+  }
+  const uid = React.useId().replace(/:/g, "");
+  const width = 800;
+  const height = 260;
+  const left = 48;
+  const right = 18;
+  const top = 18;
+  const bottom = 42;
+  const plotWidth = width - left - right;
+  const plotHeight = height - top - bottom;
+  const maxValue = Math.max(1, ...safeData.flatMap((row) => series.map((item) => Number(row[item.key]) || 0)));
+  const xAt = (index) => safeData.length === 1 ? left + plotWidth / 2 : left + (index / (safeData.length - 1)) * plotWidth;
+  const yAt = (value) => top + plotHeight - (value / maxValue) * plotHeight;
+  const makePath = (points) => points.reduce((path, point, index) => {
+    if (index === 0) return `M ${point.x} ${point.y}`;
+    const previous = points[index - 1];
+    const midpoint = (previous.x + point.x) / 2;
+    return `${path} Q ${midpoint} ${previous.y}, ${midpoint} ${(previous.y + point.y) / 2} T ${point.x} ${point.y}`;
+  }, "");
+  const labelStep = Math.max(1, Math.ceil(safeData.length / 8));
+  return <div className="analytics-trend-wrap">
+    <svg className="analytics-trend-chart" viewBox={`0 0 ${width} ${height}`} role="img" aria-label="Trend chart based on campus records">
+      <defs>{series.map((item, index) => <linearGradient id={`${uid}-gradient-${index}`} key={item.key} x1="0" x2="0" y1="0" y2="1"><stop offset="0%" stopColor={item.color} stopOpacity="0.25" /><stop offset="100%" stopColor={item.color} stopOpacity="0.015" /></linearGradient>)}</defs>
+      {[0, 0.5, 1].map((fraction) => { const y = top + plotHeight * (1 - fraction); return <g key={fraction}><line className="analytics-grid-line" x1={left} y1={y} x2={width - right} y2={y} /><text className="analytics-axis-label" x={left - 8} y={y + 4} textAnchor="end">{Math.round(maxValue * fraction).toLocaleString()}</text></g>; })}
+      <text className="analytics-axis-label" x="12" y={top + plotHeight / 2} textAnchor="middle" transform={`rotate(-90 12 ${top + plotHeight / 2})`}>Records</text>
+      <text className="analytics-axis-label" x={left + plotWidth / 2} y={height - 1} textAnchor="middle">Date / period</text>
+      {series.map((item, seriesIndex) => {
+        const points = safeData.map((row, index) => ({ x: xAt(index), y: yAt(Number(row[item.key]) || 0), value: Number(row[item.key]) || 0, period: row.period }));
+        const line = makePath(points);
+        const fillPath = `${line} L ${points[points.length - 1].x} ${top + plotHeight} L ${points[0].x} ${top + plotHeight} Z`;
+        return <g key={item.key}>{area && <path d={fillPath} fill={`url(#${uid}-gradient-${seriesIndex})`} />}<path d={line} fill="none" stroke={item.color} strokeWidth="3" strokeLinecap="round" strokeLinejoin="round" />{points.map((point) => { const selectable = Boolean(onPoint && point.value > 0); return <circle key={`${item.key}-${point.period}`} className={selectable ? "analytics-point-interactive" : undefined} tabIndex={selectable ? 0 : undefined} role={selectable ? "button" : undefined} aria-label={selectable ? `${point.period}: ${point.value.toLocaleString()} ${item.label}. Open matching records.` : undefined} onClick={selectable ? () => onPoint(point.period, item.key) : undefined} onKeyDown={selectable ? (event) => { if (event.key === "Enter" || event.key === " ") { event.preventDefault(); onPoint(point.period, item.key); } } : undefined} cx={point.x} cy={point.y} r={safeData.length > 25 ? 4 : 6} fill={item.color}><title>{`${point.period}: ${point.value.toLocaleString()} ${item.label.toLowerCase()}`}</title></circle>; })}{points.map((point, index) => (seriesIndex === 0 && (index % labelStep === 0 || index === points.length - 1)) ? <text className="analytics-axis-label" key={`label-${point.period}`} x={point.x} y={height - 12} textAnchor="middle">{point.period.length > 7 ? point.period.slice(5) : point.period}</text> : null)}</g>;
+      })}
+    </svg>
+    <div className="analytics-legend">{series.map((item) => <span key={item.key}><i style={{ background: item.color }} />{item.label}</span>)}</div>
+  </div>;
+}
+
+function AnalyticsDonut({ rows, onSelect }) {
+  const colors = ["#d95462", "#e49b36", "#4668d5", "#18a184"];
+  const safeRows = Array.isArray(rows) ? rows.filter((row) => row && Number(row.value) > 0) : [];
+  const total = safeRows.reduce((sum, row) => sum + Number(row.value), 0);
+  if (!total) return <div className="analytics-empty">No priority records are available.</div>;
+  const radius = 58;
+  const circumference = 2 * Math.PI * radius;
+  let offset = 0;
+  return <div className="analytics-donut-layout"><svg viewBox="0 0 160 160" role="img" aria-label="Complaint distribution by priority"><circle cx="80" cy="80" r={radius} fill="none" stroke="#edf1f7" strokeWidth="22" />{safeRows.map((row, index) => { const length = Number(row.value) / total * circumference; const circle = <circle key={row.label} cx="80" cy="80" r={radius} fill="none" stroke={colors[index % colors.length]} strokeWidth="22" strokeDasharray={`${length} ${circumference - length}`} strokeDashoffset={-offset} transform="rotate(-90 80 80)"><title>{`${row.label}: ${Number(row.value).toLocaleString()} complaints`}</title></circle>; offset += length; return circle; })}<text x="80" y="76" textAnchor="middle" className="analytics-donut-total">{total.toLocaleString()}</text><text x="80" y="96" textAnchor="middle" className="analytics-donut-caption">complaints</text></svg><div className="analytics-donut-legend">{safeRows.map((row, index) => <button className="analytics-donut-item" type="button" key={row.label} onClick={onSelect ? () => onSelect(row.query) : undefined} disabled={!onSelect || !row.query} aria-label={`${row.label}: ${Number(row.value).toLocaleString()} complaints. Open matching records.`}><i style={{ background: colors[index % colors.length] }} />{row.label}<strong>{Number(row.value).toLocaleString()}</strong></button>)}</div></div>;
+}
+
 function rangeLabel(range) {
   return range === "all" ? "all time" : range === "7d" ? "last 7 days" : "last 30 days";
 }
 
-function AnalyticsMetricSection({ title, metrics }) {
+function AnalyticsGroupHeading({ title, description }) {
+  return <div className="analytics-group-heading"><h2>{title}</h2><p>{description}</p></div>;
+}
+
+function AnalyticsMetricSection({ title, metrics, onMetric }) {
   return (
     <section className="analytics-section">
       <h2>{title}</h2>
       <div className="analytics-metrics">
-        {metrics.map(([label, value, Icon, color]) => (
-          <MetricCard key={label} label={label} value={value} Icon={Icon} color={color} />
+        {metrics.map(([label, value, Icon, color, target]) => (
+          <MetricCard key={label} label={label} value={value} Icon={Icon} color={color} onClick={target?.page && onMetric ? () => onMetric(target) : undefined} />
         ))}
       </div>
     </section>
   );
 }
 
-function BookingTrendChart({ data, granularity }) {
+function BookingTrendChart({ data, granularity, onPoint }) {
   const chartData = Array.isArray(data) ? data.filter((item) => item && typeof item === "object" && typeof item.period === "string").slice(-24) : [];
   if (!chartData.length || chartData.every((item) => item.total === 0)) {
     return <div className="analytics-empty">No booking records for this period.</div>;
@@ -1183,6 +1427,7 @@ function BookingTrendChart({ data, granularity }) {
           const y = top + plotHeight * (1 - fraction);
           return <g key={fraction}><line x1={left} y1={y} x2={width - right} y2={y} stroke="#eceef3" /><text x={left - 8} y={y + 4} textAnchor="end">{Math.round(maxValue * fraction)}</text></g>;
         })}
+        <text x="11" y={top + plotHeight / 2} textAnchor="middle" transform={`rotate(-90 11 ${top + plotHeight / 2})`}>Bookings</text>
         {chartData.map((item, index) => {
           const x = left + index * slotWidth + (slotWidth - barWidth) / 2;
           let yBottom = top + plotHeight;
@@ -1193,7 +1438,7 @@ function BookingTrendChart({ data, granularity }) {
                 if (!count) return null;
                 const barHeight = (count / maxValue) * plotHeight;
                 yBottom -= barHeight;
-                return <rect key={status} x={x} y={yBottom} width={barWidth} height={barHeight} fill={colors[status]}><title>{`${item.period}: ${count} ${status.toLowerCase()}`}</title></rect>;
+                return <rect key={status} className="analytics-point-interactive" tabIndex={0} role="button" aria-label={`${item.period}: ${count.toLocaleString()} ${status.toLowerCase()} bookings. Open matching records.`} onClick={() => onPoint?.(item.period, status)} onKeyDown={(event) => { if (event.key === "Enter" || event.key === " ") { event.preventDefault(); onPoint?.(item.period, status); } }} x={x} y={yBottom} width={barWidth} height={barHeight} fill={colors[status]}><title>{`${item.period}: ${count.toLocaleString()} ${status.toLowerCase()} bookings`}</title></rect>;
               })}
               {(index % labelStep === 0 || index === chartData.length - 1) && (
                 <text x={x + barWidth / 2} y={height - 12} textAnchor="middle">{granularity === "month" ? item.period : item.period.slice(5)}</text>
@@ -1202,6 +1447,7 @@ function BookingTrendChart({ data, granularity }) {
           );
         })}
       </svg>
+      <div className="analytics-axis-caption"><span>Booking date / period</span><span>Requests</span></div>
       <div className="analytics-legend">
         {statuses.map((status) => <span key={status}><i style={{ background: colors[status] }} />{status}</span>)}
       </div>
@@ -1209,20 +1455,41 @@ function BookingTrendChart({ data, granularity }) {
   );
 }
 
-function AnalyticsBars({ rows }) {
+function AnalyticsBars({ rows, onSelect }) {
   const safeRows = Array.isArray(rows) ? rows.filter((row) => Array.isArray(row) && row.length >= 3) : [];
   const maxValue = Math.max(1, ...safeRows.map(([, value]) => Number(value) || 0));
   return (
     <div className="analytics-bars">
-      {safeRows.map(([label, value, color]) => (
-        <div className="analytics-bar-row" key={label}>
+      {safeRows.map(([label, value, color, query]) => {
+        const Row = onSelect && query ? "button" : "div";
+        return <Row className={`analytics-bar-row${onSelect && query ? " analytics-bar-action" : ""}`} key={label} {...(onSelect && query ? { type: "button", onClick: () => onSelect(query), "aria-label": `${label}: ${Number(value).toLocaleString()}. Open matching records.` } : {})}>
           <span>{label}</span>
-          <div className="analytics-bar-track"><i style={{ width: `${(value / maxValue) * 100}%`, background: color }} /></div>
-          <strong>{value}</strong>
-        </div>
-      ))}
+          <span className="analytics-bar-track" title={`${label}: ${Number(value).toLocaleString()}`}><i style={{ width: `${(Number(value) / maxValue) * 100}%`, background: color }} /></span>
+          <strong>{Number(value).toLocaleString()}</strong>
+        </Row>;
+      })}
     </div>
   );
+}
+
+function PeakBookingHoursChart({ data, onSelect }) {
+  const rows = Array.from({ length: 24 }, (_, hour) => ({ hour, bookings: Number(data.find((row) => Number(row.hour) === hour)?.bookings) || 0 }));
+  if (rows.every((row) => row.bookings === 0)) return <div className="analytics-empty">No bookings are recorded in this reporting period.</div>;
+  const maxBookings = Math.max(1, ...rows.map((row) => row.bookings));
+  const width = 760;
+  const height = 230;
+  const left = 42;
+  const right = 12;
+  const top = 14;
+  const bottom = 34;
+  const plotHeight = height - top - bottom;
+  const plotWidth = width - left - right;
+  const slot = plotWidth / 24;
+  const barWidth = slot * 0.64;
+  return <div className="peak-hours-chart-wrap"><svg className="peak-hours-chart" viewBox={`0 0 ${width} ${height}`} role="img" aria-label="Bookings by starting hour, across all 24 hours">
+    {[0, 0.5, 1].map((fraction) => { const y = top + plotHeight * (1 - fraction); return <g key={fraction}><line className="analytics-grid-line" x1={left} y1={y} x2={width - right} y2={y} /><text className="analytics-axis-label" x={left - 7} y={y + 4} textAnchor="end">{Math.round(maxBookings * fraction)}</text></g>; })}
+    {rows.map(({ hour, bookings }) => { const barHeight = bookings / maxBookings * plotHeight; const x = left + hour * slot + (slot - barWidth) / 2; const y = top + plotHeight - barHeight; const activeProps = bookings > 0 ? { className: "analytics-point-interactive", tabIndex: 0, role: "button", "aria-label": `${String(hour).padStart(2, "0")}:00, ${bookings.toLocaleString()} bookings. Open matching records.`, onClick: () => onSelect(hour), onKeyDown: (event) => { if (event.key === "Enter" || event.key === " ") { event.preventDefault(); onSelect(hour); } } } : {}; return <g key={hour}><rect {...activeProps} x={x} y={y} width={barWidth} height={barHeight} fill="#159b88" rx="2"><title>{`${String(hour).padStart(2, "0")}:00 — ${bookings.toLocaleString()} bookings`}</title></rect>{hour % 2 === 0 && <text className="analytics-axis-label" x={x + barWidth / 2} y={height - 11} textAnchor="middle">{String(hour).padStart(2, "0")}</text>}</g>; })}
+  </svg><div className="analytics-axis-caption"><span>Starting hour (24-hour clock)</span><span>Bookings</span></div></div>;
 }
 
 function RoomForecastPanel({ token }) {
@@ -1600,21 +1867,25 @@ function DashboardPage({ dashboard, dashboardError, isLoading, onNavigate, onRet
             ["Assigned maintenance", dashboard.assignedMaintenance || 0, Wrench, "var(--tone-brand)"],
             ["Active issues", dashboard.activeIssues || 0, Clock3, "var(--tone-warning)"],
             ["Awaiting verification", dashboard.pendingVerification || 0, CheckCircle2, "var(--tone-success)"],
+            ["Repairs completed", dashboard.completedRepairs || 0, CheckCircle2, "var(--tone-info)"],
           ]
       : [
           ["Students", dashboard.students || 0, Users, "var(--tone-brand)"],
           ["Faculty", dashboard.faculty || 0, ClipboardCheck, "var(--tone-success)"],
+          ["Technicians", dashboard.technicians || 0, Wrench, "var(--tone-info)"],
+          ["Buildings", dashboard.buildings || 0, Building2, "var(--tone-warning)"],
           ["Rooms", dashboard.rooms || 0, DoorOpen, "var(--tone-info)"],
           ["Classes", dashboard.classes || 0, CalendarDays, "var(--tone-warning)"],
           ["Bookings", dashboard.bookings || 0, CalendarDays, "var(--tone-brand)"],
           ["Open complaints", dashboard.openComplaints || 0, MessageSquareWarning, "var(--tone-danger)"],
+          ["Maintenance rooms", dashboard.maintenanceRooms || 0, Wrench, "var(--tone-danger)"],
         ];
 
   return (
     <>
       {dashboardError && <div className="error" role="alert">{dashboardError} <button className="secondary" onClick={onRetry}>Retry</button></div>}
       <div className={`cards dashboard-cards dashboard-${dashboard.role || "loading"}`}>
-        {isLoading ? Array.from({ length: dashboard.role === "admin" ? 6 : dashboard.role === "technician" ? 3 : 4 }, (_, index) => <div className="card card-skeleton" key={index}><i /><i /><i /></div>) : cards.map(([label, value, Icon, color]) => (
+        {isLoading ? Array.from({ length: dashboard.role === "admin" ? 9 : dashboard.role === "technician" ? 4 : 4 }, (_, index) => <div className="card card-skeleton" key={index}><i /><i /><i /></div>) : cards.map(([label, value, Icon, color]) => (
           <MetricCard
             key={label}
             label={label}
@@ -1665,7 +1936,9 @@ function DashboardPage({ dashboard, dashboardError, isLoading, onNavigate, onRet
           ) : dashboard.role === "admin" ? (
             <div className="dashboard-role-summary">
               <strong>{dashboard.classes ? `${dashboard.classes} class records` : "No classes have been added yet."}</strong>
-              <p>{dashboard.rooms} rooms, {dashboard.bookings} bookings and {dashboard.notices} notices recorded.</p>
+              <p>{dashboard.rooms} rooms across {dashboard.buildings} buildings; {dashboard.bookings} bookings and {dashboard.notices} notices recorded.</p>
+              <p>Bookings: {dashboard.bookingStatus?.Approved || 0} approved · {dashboard.bookingStatus?.Pending || 0} pending · {dashboard.bookingStatus?.Rejected || 0} rejected · {dashboard.bookingStatus?.Cancelled || 0} cancelled.</p>
+              <p>Seven-day attendance rate: {dashboard.attendanceSummary?.percentage || 0}% · {dashboard.openComplaints} active complaints.</p>
             </div>
           ) : (
             <div className="empty">
@@ -1711,6 +1984,36 @@ function DashboardPage({ dashboard, dashboardError, isLoading, onNavigate, onRet
         </div>
       </div>
 
+      {dashboard.role === "admin" && (
+        <div className="dashboard-admin-details">
+          <section className="panel">
+            <PanelHeading title="Buildings and room readiness" subtitle="Operational and maintenance counts from room records" />
+            {dashboard.buildingSummaries.length ? dashboard.buildingSummaries.map((building) => (
+              <div className="building-summary-row" key={building._id}>
+                <strong>{building._id}</strong><span>{building.rooms} rooms</span>
+                <span className="building-operational">{building.operationalRooms} operational</span>
+                <span className="building-maintenance">{building.maintenanceRooms} on maintenance hold</span>
+              </div>
+            )) : <div className="analytics-empty">No building records are available.</div>}
+          </section>
+          <section className="panel">
+            <PanelHeading title="Maintenance alerts" subtitle="Latest unresolved room issues" />
+            {dashboard.maintenanceAlerts.length ? dashboard.maintenanceAlerts.slice(0, 6).map((issue) => (
+              <div className="activity-row" key={issue._id}>
+                <span><strong>{issue.title}</strong><small>{issue.room?.building} · {issue.room?.name} · {issue.assignedTo?.name || "Unassigned"}</small></span>
+                <StatusBadge status={issue.priority} />
+              </div>
+            )) : <div className="analytics-empty">No unresolved maintenance issues.</div>}
+          </section>
+          <section className="panel">
+            <PanelHeading title="Recent campus activity" subtitle="Latest recorded actions" />
+            {dashboard.recentActivity.length ? dashboard.recentActivity.map((item) => (
+              <div className="activity-row" key={item._id}><span><strong>{item.summary}</strong><small>{item.actor?.name || "Campus administrator"} · {new Date(item.createdAt).toLocaleString()}</small></span></div>
+            )) : <div className="analytics-empty">No campus activity is recorded yet.</div>}
+          </section>
+        </div>
+      )}
+
       {student && (
         <div className="panel">
           <PanelHeading
@@ -1735,17 +2038,18 @@ function DashboardPage({ dashboard, dashboardError, isLoading, onNavigate, onRet
   );
 }
 
-function MetricCard({ label, value, Icon, color }) {
+function MetricCard({ label, value, Icon, color, onClick }) {
+  const Card = onClick ? "button" : "div";
   return (
-    <div className="card">
-      <div className="card-icon" style={{ color, background: `color-mix(in srgb, ${color} 11%, white)` }}>
+    <Card className={`card${onClick ? " metric-card-action" : ""}`} type={onClick ? "button" : undefined} onClick={onClick} aria-label={onClick ? `${label}: ${typeof value === "number" ? value.toLocaleString() : value}. Open matching records.` : undefined}>
+      <span className="card-icon" style={{ color, background: `color-mix(in srgb, ${color} 11%, white)` }}>
         <Icon size={19} />
-      </div>
+      </span>
       <strong>
         {typeof value === "number" ? value.toLocaleString() : value}
       </strong>
       <small>{label}</small>
-    </div>
+    </Card>
   );
 }
 
@@ -1769,6 +2073,7 @@ function PanelHeading({ title, subtitle, children }) {
 function ResourceTable({
   page,
   initialRecordId,
+  initialQuery = {},
   records,
   totalRecords,
   listError,
@@ -1796,7 +2101,13 @@ function ResourceTable({
   const resourceRecords = hasInvalidRecords ? [] : records;
   const resourceTechnicians = Array.isArray(technicians) ? technicians : [];
   const resourceTotal = Number.isSafeInteger(totalRecords) && totalRecords >= 0 ? totalRecords : 0;
-  const [filters, setFilters] = useState({ roomSearch: "", priority: "", status: "", assignee: "", building: "", operational: "", type: "", available: "", date: "" });
+  const [filters, setFilters] = useState(() => ({
+    roomSearch: initialQuery.roomSearch || "", priority: initialQuery.priority || "", status: initialQuery.status || "",
+    assignee: initialQuery.assignee || "", building: initialQuery.building || "", operational: "", type: "", available: "",
+    date: initialQuery.date || "", dateFrom: initialQuery.dateFrom || "", dateTo: initialQuery.dateTo || "",
+    createdAtFrom: initialQuery.createdAtFrom || "", createdAtTo: initialQuery.createdAtTo || "",
+    startHour: initialQuery.startHour === undefined ? "" : String(initialQuery.startHour),
+  }));
   const [sort, setSort] = useState({ column: "", direction: "asc" });
   const [currentPage, setCurrentPage] = useState(1);
   const [recordId, setRecordId] = useState(initialRecordId || "");
@@ -1821,9 +2132,11 @@ function ResourceTable({
         }
       }
       const filterFields = page === "Complaints"
-        ? { roomSearch: "roomSearch", priority: "priority", status: "status", assignee: "assignee" }
+        ? { roomSearch: "roomSearch", priority: "priority", status: "status", assignee: "assignee", createdAtFrom: "createdAtFrom", createdAtTo: "createdAtTo" }
         : page === "Room bookings"
-          ? { status: "status", date: "date", roomSearch: "roomSearch" }
+          ? { status: "status", date: "date", roomSearch: "roomSearch", building: "building", dateFrom: "dateFrom", dateTo: "dateTo", startHour: "startHour" }
+          : page === "Attendance"
+            ? { date: "date", status: "status" }
           : page === "Classrooms"
             ? { building: "building", operational: "operational", type: "type", available: "available" }
             : {};
@@ -1841,13 +2154,21 @@ function ResourceTable({
     }));
   }
 
+  function clearTableFilters() {
+    setFilters({ roomSearch: "", priority: "", status: "", assignee: "", building: "", operational: "", type: "", available: "", date: "", dateFrom: "", dateTo: "", createdAtFrom: "", createdAtTo: "", startHour: "" });
+    setSearchText("");
+    setRecordId("");
+  }
+
   return (
     <div className="panel tablepanel">
-      <PanelHeading title={page === "Complaints" ? "Central Maintenance Notice Board" : page} subtitle={`${resourceTotal} records`}>
+      <PanelHeading title={page === "Complaints" ? "Central Maintenance Notice Board" : page} subtitle={`${resourceTotal.toLocaleString()} records${page === "Complaints" && (filters.createdAtFrom || filters.createdAtTo) ? ` · ${filters.createdAtFrom || "Any date"} to ${filters.createdAtTo || "present"}` : ""}`}>
         <div className="resource-filters">
           <div className="filter"><Search size={16} /><input placeholder={`Filter ${page.toLowerCase()}`} value={searchText} onChange={(event) => onSearch(event.target.value)} /></div>
           {page === "Complaints" && <div className="maintenance-filters">
             <input aria-label="Filter by room or building" placeholder="Room or building" value={filters.roomSearch} onChange={(event) => setFilters((value) => ({ ...value, roomSearch: event.target.value }))} />
+            <label className="date-filter">Created from<input aria-label="Complaints created from" type="date" value={filters.createdAtFrom} onChange={(event) => setFilters((value) => ({ ...value, createdAtFrom: event.target.value }))} /></label>
+            <label className="date-filter">Created through<input aria-label="Complaints created through" type="date" value={filters.createdAtTo} onChange={(event) => setFilters((value) => ({ ...value, createdAtTo: event.target.value }))} /></label>
             <select aria-label="Filter by priority" value={filters.priority} onChange={(event) => setFilters((value) => ({ ...value, priority: event.target.value }))}>
               <option value="">All priorities</option>{["Low", "Normal", "High", "Urgent"].map((priority) => <option key={priority}>{priority}</option>)}
             </select>
@@ -1857,10 +2178,12 @@ function ResourceTable({
             {userRole === "admin" && <select aria-label="Filter by assignee" value={filters.assignee} onChange={(event) => setFilters((value) => ({ ...value, assignee: event.target.value }))}>
               <option value="">All assignees</option><option value="unassigned">Unassigned</option>{resourceTechnicians.map((technician) => <option key={technician.id} value={technician.id}>{technician.name}</option>)}
             </select>}
+            <button className="clear-filter-button" type="button" onClick={clearTableFilters}>Clear filters</button>
           </div>}
           {page === "Room bookings" && <div className="maintenance-filters"><select aria-label="Filter bookings by status" value={filters.status} onChange={(event) => setFilters((value) => ({ ...value, status: event.target.value }))}>
             <option value="">All statuses</option>{["Pending", "Approved", "Rejected", "Cancelled"].map((status) => <option key={status}>{status}</option>)}
-          </select><input aria-label="Filter bookings by date" type="date" value={filters.date} onChange={(event) => setFilters((value) => ({ ...value, date: event.target.value }))} /><input aria-label="Filter bookings by room or building" placeholder="Room or building" value={filters.roomSearch} onChange={(event) => setFilters((value) => ({ ...value, roomSearch: event.target.value }))} /></div>}
+          </select><label className="date-filter">From<input aria-label="Bookings from date" type="date" value={filters.dateFrom} onChange={(event) => setFilters((value) => ({ ...value, dateFrom: event.target.value }))} /></label><label className="date-filter">Through<input aria-label="Bookings through date" type="date" value={filters.dateTo} onChange={(event) => setFilters((value) => ({ ...value, dateTo: event.target.value }))} /></label><input aria-label="Filter bookings by building" placeholder="Building" value={filters.building} onChange={(event) => setFilters((value) => ({ ...value, building: event.target.value }))} /><select aria-label="Filter by booking start hour" value={filters.startHour} onChange={(event) => setFilters((value) => ({ ...value, startHour: event.target.value }))}><option value="">All start hours</option>{Array.from({ length: 24 }, (_, hour) => <option key={hour} value={hour}>{String(hour).padStart(2, "0")}:00</option>)}</select><input aria-label="Filter bookings by room" placeholder="Room" value={filters.roomSearch} onChange={(event) => setFilters((value) => ({ ...value, roomSearch: event.target.value }))} /></div>}
+          {page === "Attendance" && <div className="maintenance-filters"><label className="date-filter">Attendance date<input aria-label="Filter attendance by date" type="date" value={filters.date} onChange={(event) => setFilters((value) => ({ ...value, date: event.target.value }))} /></label><select aria-label="Filter attendance by status" value={filters.status} onChange={(event) => setFilters((value) => ({ ...value, status: event.target.value }))}><option value="">All statuses</option>{["present", "late", "absent"].map((status) => <option key={status}>{status}</option>)}</select></div>}
           {page === "Classrooms" && <div className="maintenance-filters">
             <input aria-label="Filter rooms by building" placeholder="Building" value={filters.building} onChange={(event) => setFilters((value) => ({ ...value, building: event.target.value }))} />
             <select aria-label="Filter rooms by inspection status" value={filters.operational} onChange={(event) => setFilters((value) => ({ ...value, operational: event.target.value }))}><option value="">All inspection statuses</option>{["Operational", "Maintenance required", "Not inspected"].map((status) => <option key={status}>{status}</option>)}</select>
@@ -2262,6 +2585,7 @@ function ResourceRow({ page, record, canEdit, onEdit, onDelete, onResolve, onBoo
       <tr>
         <td>
           <strong>{record.courseName}</strong>
+          <small>{record.department || record.faculty?.department || ""}</small>
         </td>
         <td>
           {record.courseCode} / {record.section}
@@ -2451,7 +2775,7 @@ function ResourceRow({ page, record, canEdit, onEdit, onDelete, onResolve, onBoo
   );
 }
 
-function AuthenticationPage({ onLogin }) {
+function AuthenticationPage({ onLogin, logoutMessage }) {
   const [isRegistering, setIsRegistering] = useState(false);
   const [formValues, setFormValues] = useState({ role: "student" });
   const [message, setMessage] = useState("");
@@ -2510,6 +2834,8 @@ function AuthenticationPage({ onLogin }) {
         <label>CAMPUS MANAGEMENT, SIMPLIFIED</label>
         <h1>{isRegistering ? "Create your account" : "Welcome back"}</h1>
         <p>Sign in to manage your campus workspace.</p>
+
+        {logoutMessage && <div className="error" role="alert">{logoutMessage}</div>}
 
         {message && <div className="error">{message}</div>}
 
@@ -2955,8 +3281,8 @@ function RecordModal({ page, token, onClose, onSubmit, initialRecord }) {
               <small>Search and select students. Enrollment is validated against class capacity and schedule conflicts.</small>
               </>
             ) : name === "equipment" ? (
-              <select name={name} required={Boolean(formValues.room)} value={formValues[name] || ""} onChange={updateField} disabled={!formValues.room}>
-                <option value="">Select equipment</option>{["Fan", "AC", "Projector", "Light"].map((item) => <option key={item}>{item}</option>)}
+              <select name={name} value={formValues[name] || ""} onChange={updateField} disabled={!formValues.room}>
+                <option value="">General room issue (plumbing, furniture, network)</option>{["Fan", "AC", "Projector", "Light"].map((item) => <option key={item}>{item}</option>)}
               </select>
             ) : name === "priority" ? (
               <select name={name} value={formValues[name] || "Normal"} onChange={updateField}>

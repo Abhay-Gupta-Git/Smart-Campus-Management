@@ -116,6 +116,22 @@ async function getBookings(req, res) {
       if (!isValidDateString(req.query.date)) return res.status(400).json({ message: "Date filter must use a valid YYYY-MM-DD date." });
       clauses.push({ date: req.query.date });
     }
+    if (req.query.dateFrom !== undefined || req.query.dateTo !== undefined) {
+      if ((req.query.dateFrom !== undefined && !isValidDateString(req.query.dateFrom)) ||
+        (req.query.dateTo !== undefined && !isValidDateString(req.query.dateTo)) ||
+        (req.query.dateFrom && req.query.dateTo && req.query.dateFrom > req.query.dateTo)) {
+        return res.status(400).json({ message: "Booking date range must use valid YYYY-MM-DD dates in ascending order." });
+      }
+      const dateFilter = {};
+      if (req.query.dateFrom) dateFilter.$gte = req.query.dateFrom;
+      if (req.query.dateTo) dateFilter.$lte = req.query.dateTo;
+      clauses.push({ date: dateFilter });
+    }
+    if (req.query.startHour !== undefined) {
+      const hour = Number(req.query.startHour);
+      if (!Number.isInteger(hour) || hour < 0 || hour > 23) return res.status(400).json({ message: "Booking start hour must be between 0 and 23." });
+      clauses.push({ startTime: { $regex: `^${String(hour).padStart(2, "0")}:` } });
+    }
     if (req.query.status !== undefined) {
       if (!["Pending", "Approved", "Rejected", "Cancelled"].includes(req.query.status)) return res.status(400).json({ message: "Booking status filter is invalid." });
       clauses.push({ status: req.query.status });

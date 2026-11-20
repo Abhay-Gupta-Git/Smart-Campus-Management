@@ -8,6 +8,7 @@
     "dev": "nodemon server.js",
     "setup:admin": "node scripts/setupInitialAdmin.js",
     "recover:admin": "node scripts/recoverAdminAccount.js",
+    "upgrade:demo-names": "node scripts/upgradeDemoNames.js",
     "migrate:integrity-indexes": "node scripts/migrateIntegrityIndexes.js",
     "seed:demo": "node scripts/seedDemoData.js"
   },

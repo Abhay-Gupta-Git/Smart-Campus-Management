@@ -2,10 +2,11 @@ const mongoose = require("mongoose");
 const Complaint = require("../models/Complaint");
 const Room = require("../models/Room");
 const User = require("../models/User");
+const CampusClass = require("../models/CampusClass");
 const recordActivity = require("../utils/activityLog");
 const { createNotifications } = require("../utils/notifications");
 const { readPagination, readSearch, readSort, escapeRegex, executeListQuery } = require("../utils/pagination");
-const { hasOnlyFields } = require("../utils/validation");
+const { hasOnlyFields, isValidDateString } = require("../utils/validation");
 const { runTransaction, isTransactionUnsupported, lockRoomReference } = require("../utils/transactions");
 const { recomputeRoomMaintenanceState } = require("../services/roomMaintenanceService");
 
@@ -43,16 +44,45 @@ function roomLabel(room) {
   return room ? `${room.name} in ${room.building}` : "Campus complaint";
 }
 
+async function teachingBuildingsForFaculty(facultyId, session) {
+  let query = CampusClass.find({ faculty: facultyId }).select("room").populate("room", "building");
+  if (session) query = query.session(session);
+  const classes = await query.lean();
+  return [...new Set(classes.map((item) => item.room?.building).filter(Boolean))];
+}
+
 async function listComplaints(req, res) {
   try {
     let baseFilter = {};
     if (req.user.role === "technician") baseFilter = { assignedTo: req.user.id };
     else if (req.user.role === "student") baseFilter = { submittedBy: req.user.id };
     else if (req.user.role === "faculty") {
-      baseFilter = { $or: [{ submittedBy: req.user.id }, { room: { $ne: null }, status: "Pending Verification" }] };
+      const buildings = await teachingBuildingsForFaculty(req.user.id);
+      const eligibleRoomIds = buildings.length ? await Room.distinct("_id", { building: { $in: buildings } }) : [];
+      baseFilter = { $or: [
+        { submittedBy: req.user.id },
+        ...(eligibleRoomIds.length ? [{ room: { $in: eligibleRoomIds }, status: "Pending Verification" }] : []),
+      ] };
     }
 
     const filterParts = Object.keys(baseFilter).length ? [baseFilter] : [];
+    const createdAtFrom = req.query.createdAtFrom;
+    const createdAtTo = req.query.createdAtTo;
+    if (createdAtFrom !== undefined || createdAtTo !== undefined) {
+      if ((createdAtFrom !== undefined && !isValidDateString(createdAtFrom)) ||
+        (createdAtTo !== undefined && !isValidDateString(createdAtTo)) ||
+        (createdAtFrom && createdAtTo && createdAtFrom > createdAtTo)) {
+        return res.status(400).json({ message: "Complaint date range must use valid YYYY-MM-DD dates in ascending order." });
+      }
+      const createdAt = {};
+      if (createdAtFrom) createdAt.$gte = new Date(`${createdAtFrom}T00:00:00.000Z`);
+      if (createdAtTo) {
+        const dayAfterTo = new Date(`${createdAtTo}T00:00:00.000Z`);
+        dayAfterTo.setUTCDate(dayAfterTo.getUTCDate() + 1);
+        createdAt.$lt = dayAfterTo;
+      }
+      filterParts.push({ createdAt });
+    }
     if (req.query.recordId !== undefined) {
       if (!validId(req.query.recordId)) return res.status(400).json({ message: "Record filter is invalid." });
       filterParts.push({ _id: req.query.recordId });
@@ -121,8 +151,8 @@ async function createComplaint(req, res) {
     typeof body.description !== "string" || !body.description.trim() || body.description.trim().length > 3000) {
     return res.status(400).json({ message: "A title and issue description are required." });
   }
-  if (body.room && (!validId(body.room) || !equipmentTypes.includes(body.equipment))) {
-    return res.status(400).json({ message: "Choose a valid room and equipment type for a facility issue." });
+  if (body.room && (!validId(body.room) || (body.equipment && !equipmentTypes.includes(body.equipment)))) {
+    return res.status(400).json({ message: "Choose a valid room and, when relevant, a supported equipment type." });
   }
   if (!body.room && body.equipment) return res.status(400).json({ message: "Equipment can only be specified for a room issue." });
   const priority = body.priority || "Normal";
@@ -144,21 +174,23 @@ async function createComplaint(req, res) {
         description: body.description.trim(),
         category: typeof body.category === "string" && body.category.trim() ? body.category.trim().slice(0, 80) : body.room ? "Room maintenance" : "General",
         room: body.room || null,
-        equipment: body.room ? body.equipment : null,
+        equipment: body.room && equipmentTypes.includes(body.equipment) ? body.equipment : null,
         priority,
         submittedBy: req.user.id,
         history: [{ actor: req.user.id, action: body.room ? "Facility issue reported" : "Complaint submitted", note: body.description.trim() }],
       }], { session });
 
       if (room) {
-        const item = room.equipment.find((entry) => entry.type === complaint.equipment);
-        const reportedEquipment = {
-          type: complaint.equipment,
-          status: "Not Working",
-          note: "Fault reported; see maintenance complaint.",
-        };
-        if (item) Object.assign(item, reportedEquipment);
-        else room.equipment.push(reportedEquipment);
+        if (complaint.equipment) {
+          const item = room.equipment.find((entry) => entry.type === complaint.equipment);
+          const reportedEquipment = {
+            type: complaint.equipment,
+            status: "Not Working",
+            note: "Fault reported; see maintenance complaint.",
+          };
+          if (item) Object.assign(item, reportedEquipment);
+          else room.equipment.push(reportedEquipment);
+        }
         room.maintenanceHold = true;
         await room.save({ session });
       }
@@ -169,7 +201,7 @@ async function createComplaint(req, res) {
 
     await recordActivity({ actor: req.user.id, action: "Complaint submitted", entityType: "complaint", entityId: complaint._id, summary: `Submitted: ${complaint.title}` });
     const complaintContext = complaint.room
-      ? `${complaint.equipment} issue reported in ${await getRoomLabel(complaint.room)}.`
+      ? `${complaint.equipment || complaint.category} issue reported in ${await getRoomLabel(complaint.room)}.`
       : `A new complaint was submitted: ${complaint.title}.`;
     await notifyRole("admin", complaint, "New complaint submitted", complaintContext, `complaint:${complaint._id}:submitted`);
     return res.status(201).json(await populatedComplaints(Complaint.findById(complaint._id)));
@@ -215,7 +247,8 @@ async function assignComplaint(req, res) {
     await complaint.save();
     await recordActivity({ actor: req.user.id, action: technician ? "Complaint assigned" : "Complaint unassigned", entityType: "complaint", entityId: complaint._id, summary: `${complaint.title}${technician ? ` assigned to ${technician.name}` : " assignment cleared"}.` });
     const label = await getRoomLabel(complaint.room);
-    await notifyUsers([complaint.submittedBy, previousAssignee, technician?._id], complaint, technician ? "Maintenance issue assigned" : "Maintenance assignment updated", `${complaint.equipment} issue for ${label} is ${technician ? `assigned to ${technician.name}` : "unassigned"}.`, `complaint-history:${complaint.history.at(-1)._id}`);
+    const issueLabel = complaint.equipment || complaint.category || "Facilities";
+    await notifyUsers([complaint.submittedBy, previousAssignee, technician?._id], complaint, technician ? "Maintenance issue assigned" : "Maintenance assignment updated", `${issueLabel} issue for ${label} is ${technician ? `assigned to ${technician.name}` : "unassigned"}.`, `complaint-history:${complaint.history.at(-1)._id}`);
     return res.json(await populatedComplaints(Complaint.findById(complaint._id)));
   } catch (error) {
     console.error("Assign complaint failed:", error.name || "Error");
@@ -258,9 +291,10 @@ async function updateWork(req, res) {
     await recordActivity({ actor: req.user.id, action: status === "Pending Verification" ? "Repair submitted for verification" : "Maintenance progress updated", entityType: "complaint", entityId: complaint._id, summary: `${complaint.title} moved to ${status}.` });
     const label = await getRoomLabel(complaint.room);
     const eventId = `complaint-history:${complaint.history.at(-1)._id}`;
-    await notifyRole("admin", complaint, "Maintenance work updated", `${complaint.equipment} issue for ${label} is now ${status}.`, eventId);
-    if (status === "Pending Verification") await notifyRole("faculty", complaint, "Repair needs verification", `${complaint.equipment} repair for ${label} is ready for faculty verification.`, eventId);
-    await notifyUsers([complaint.submittedBy], complaint, status === "Pending Verification" ? "Repair ready for verification" : "Maintenance work updated", `${complaint.equipment} issue for ${label}: ${status === "Pending Verification" ? "repair submitted for faculty verification" : "work progress updated"}.`, eventId);
+    const issueLabel = complaint.equipment || complaint.category || "Facilities";
+    await notifyRole("admin", complaint, "Maintenance work updated", `${issueLabel} issue for ${label} is now ${status}.`, eventId);
+    if (status === "Pending Verification") await notifyRole("faculty", complaint, "Repair needs verification", `${issueLabel} repair for ${label} is ready for faculty verification.`, eventId);
+    await notifyUsers([complaint.submittedBy], complaint, status === "Pending Verification" ? "Repair ready for verification" : "Maintenance work updated", `${issueLabel} issue for ${label}: ${status === "Pending Verification" ? "repair submitted for faculty verification" : "work progress updated"}.`, eventId);
     return res.json(await populatedComplaints(Complaint.findById(complaint._id)));
   } catch (error) {
     console.error("Update maintenance work failed:", error.name || "Error");
@@ -285,6 +319,13 @@ async function verifyRepair(req, res) {
       if (!complaint || !complaint.room) return { status: 404, message: "Facility complaint not found." };
       if (complaint.status !== "Pending Verification") return { status: 409, message: "This repair is not awaiting verification." };
       if (complaint.assignedTo?.toString() === req.user.id) return { status: 403, message: "You cannot verify your own repair work." };
+      const room = await Room.findById(complaint.room).select("building").session(session).lean();
+      if (!room) return { status: 404, message: "Room not found." };
+      const isReporter = complaint.submittedBy.toString() === req.user.id;
+      const facultyBuildings = isReporter ? [] : await teachingBuildingsForFaculty(req.user.id, session);
+      if (!isReporter && !facultyBuildings.includes(room.building)) {
+        return { status: 403, message: "Repair verification is limited to the reporting faculty member or faculty teaching in the room's building." };
+      }
 
       const oldStatus = complaint.status;
       complaint.status = decision === "accept" ? "Closed" : "In progress";
@@ -300,7 +341,7 @@ async function verifyRepair(req, res) {
       });
       await complaint.save({ session });
 
-      if (decision === "accept") {
+      if (decision === "accept" && complaint.equipment) {
         const otherEquipmentFault = await Complaint.exists({
           _id: { $ne: complaint._id },
           room: complaint.room,
@@ -328,7 +369,8 @@ async function verifyRepair(req, res) {
     await recordActivity({ actor: req.user.id, action: decision === "accept" ? "Repair accepted" : "Repair rejected", entityType: "complaint", entityId: complaint._id, summary: `${complaint.title} was ${decision === "accept" ? "accepted and closed" : "returned for more work"}.` });
     const label = await getRoomLabel(complaint.room);
     const recipients = [complaint.assignedTo, complaint.submittedBy];
-    await notifyUsers(recipients, complaint, decision === "accept" ? "Repair verified" : "Repair verification rejected", decision === "accept" ? `${complaint.equipment} repair for ${label} was accepted and the issue is closed.` : `${complaint.equipment} repair for ${label} was rejected and returned for more work.`, `complaint-history:${complaint.history.at(-1)._id}`);
+    const issueLabel = complaint.equipment || complaint.category || "Facilities";
+    await notifyUsers(recipients, complaint, decision === "accept" ? "Repair verified" : "Repair verification rejected", decision === "accept" ? `${issueLabel} repair for ${label} was accepted and the issue is closed.` : `${issueLabel} repair for ${label} was rejected and returned for more work.`, `complaint-history:${complaint.history.at(-1)._id}`);
     return res.json(await populatedComplaints(Complaint.findById(complaint._id)));
   } catch (error) {
     console.error("Repair verification failed:", JSON.stringify({ event: "repair_verification_failed", complaintId: id, actorId: req.user.id, error: error.name || "Error", code: error.code || "unknown" }));

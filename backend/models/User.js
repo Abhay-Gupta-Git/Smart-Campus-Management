@@ -36,6 +36,8 @@ const userSchema = new mongoose.Schema(
       default: null,
       maxlength: 120,
     },
+    yearOfStudy: { type: Number, min: 1, max: 8, default: null },
+    semester: { type: Number, min: 1, max: 16, default: null },
     phone: {
       type: String,
       default: "",
@@ -48,5 +50,6 @@ const userSchema = new mongoose.Schema(
 );
 
 userSchema.index({ role: 1, name: 1 });
+userSchema.index({ role: 1, createdAt: 1 });
 
 module.exports = mongoose.model("User", userSchema);

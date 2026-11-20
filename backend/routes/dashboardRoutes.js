@@ -6,6 +6,7 @@ const Booking = require("../models/Booking");
 const Notice = require("../models/Notice");
 const Complaint = require("../models/Complaint");
 const CampusClass = require("../models/CampusClass");
+const ActivityLog = require("../models/ActivityLog");
 const { protect, authorizeRoles } = require("../middleware/authMiddleware");
 const { getAnalytics } = require("../controllers/analyticsController");
 const { getRoomForecast } = require("../controllers/roomForecastController");
@@ -83,48 +84,109 @@ async function getFacultyDashboard(req, res) {
 }
 
 async function getAdminDashboard(req, res) {
+  const end = new Date();
+  end.setUTCHours(0, 0, 0, 0);
+  const start = new Date(end);
+  start.setUTCDate(start.getUTCDate() - 6);
+  const startDate = start.toISOString().slice(0, 10);
+  const endDate = end.toISOString().slice(0, 10);
   const [
     students,
     faculty,
+    technicians,
     rooms,
+    buildings,
     bookings,
+    bookingStatus,
     notices,
     openComplaints,
+    maintenanceRooms,
+    maintenanceAlerts,
     classes,
     recentNotices,
+    recentActivity,
+    buildingSummaries,
+    attendanceRows,
   ] = await Promise.all([
     User.countDocuments({ role: "student" }),
     User.countDocuments({ role: "faculty" }),
+    User.countDocuments({ role: "technician" }),
     Room.countDocuments(),
+    Room.distinct("building").then((items) => items.length),
     Booking.countDocuments(),
+    Booking.aggregate([{ $group: { _id: "$status", count: { $sum: 1 } } }]),
     Notice.countDocuments(),
     Complaint.countDocuments({ status: { $nin: ["Resolved", "Closed"] } }),
+    Room.countDocuments({ $or: [{ maintenanceHold: true }, { available: false }] }),
+    Complaint.find({ room: { $ne: null }, status: { $nin: ["Closed"] } })
+      .populate("room", "name building")
+      .populate("assignedTo", "name")
+      .sort({ priority: -1, createdAt: -1 }).limit(8).lean(),
     CampusClass.countDocuments(),
     Notice.find().populate("author", "name").sort({ createdAt: -1 }).limit(5),
+    ActivityLog.find().populate("actor", "name role").sort({ createdAt: -1 }).limit(8).lean(),
+    Room.aggregate([
+      {
+        $addFields: {
+          equipmentFault: {
+            $gt: [
+              { $size: { $filter: { input: { $ifNull: ["$equipment", []] }, as: "item", cond: { $ne: ["$$item.status", "Working"] } } } },
+              0,
+            ],
+          },
+        },
+      },
+      { $group: {
+        _id: "$building", rooms: { $sum: 1 },
+        operationalRooms: { $sum: { $cond: [{ $and: [{ $eq: ["$maintenanceHold", false] }, { $eq: ["$available", true] }, { $eq: ["$equipmentFault", false] }] }, 1, 0] } },
+        maintenanceRooms: { $sum: { $cond: [{ $or: [{ $eq: ["$maintenanceHold", true] }, { $eq: ["$available", false] }, { $eq: ["$equipmentFault", true] }] }, 1, 0] } },
+      } }, { $sort: { _id: 1 } },
+    ]),
+    Attendance.aggregate([
+      { $match: { date: { $gte: startDate, $lte: endDate } } },
+      { $group: { _id: "$status", count: { $sum: 1 } } },
+    ]),
   ]);
+  const attendanceSummary = attendanceRows.reduce((summary, row) => {
+    summary.total += row.count;
+    if (Object.hasOwn(summary, row._id)) summary[row._id] = row.count;
+    return summary;
+  }, { total: 0, present: 0, absent: 0, late: 0 });
+  attendanceSummary.percentage = attendanceSummary.total
+    ? Math.round(((attendanceSummary.present + attendanceSummary.late) / attendanceSummary.total) * 100)
+    : 0;
 
   return res.json({
     role: "admin",
     profile: req.user,
     students,
     faculty,
+    technicians,
     rooms,
+    buildings,
     bookings,
+    bookingStatus: Object.fromEntries(bookingStatus.map((row) => [row._id, row.count])),
     notices,
     classes,
     openComplaints,
+    maintenanceRooms,
+    maintenanceAlerts,
+    buildingSummaries,
+    attendanceSummary,
+    recentActivity,
     recentNotices,
   });
 }
 
 async function getTechnicianDashboard(req, res) {
   const filter = { assignedTo: req.user.id, room: { $ne: null } };
-  const [assignedMaintenance, pendingVerification, activeIssues] = await Promise.all([
+  const [assignedMaintenance, pendingVerification, activeIssues, completedRepairs] = await Promise.all([
     Complaint.countDocuments(filter),
     Complaint.countDocuments({ ...filter, status: "Pending Verification" }),
     Complaint.countDocuments({ ...filter, status: { $in: ["Open", "In progress"] } }),
+    Complaint.countDocuments({ ...filter, status: "Closed" }),
   ]);
-  return res.json({ role: "technician", profile: req.user, assignedMaintenance, pendingVerification, activeIssues });
+  return res.json({ role: "technician", profile: req.user, assignedMaintenance, pendingVerification, activeIssues, completedRepairs });
 }
 
 router.get("/", protect, async (req, res) => {

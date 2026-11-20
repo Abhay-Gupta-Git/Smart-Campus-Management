@@ -11,7 +11,7 @@ const { runTransaction, lockRoomReference, lockStudentReferences, lockUserRefere
 const Attendance = require("../models/Attendance");
 const { roomMaintenanceBlock, approvedBookingConflictForClass } = require("../utils/scheduleAvailability");
 
-const classFields = ["courseName", "courseCode", "section", "faculty", "room", "day", "startTime", "endTime", "maxEnrollment", "enrolledStudents"];
+const classFields = ["courseName", "courseCode", "section", "department", "faculty", "room", "day", "startTime", "endTime", "maxEnrollment", "enrolledStudents"];
 
 const validDays = [
   "Monday",
@@ -40,6 +40,7 @@ function hasValidClassDetails(details) {
     typeof details.courseName === "string" && details.courseName.trim().length > 0 && details.courseName.trim().length <= 160 &&
     typeof details.courseCode === "string" && details.courseCode.trim().length > 0 && details.courseCode.trim().length <= 32 &&
     typeof details.section === "string" && details.section.trim().length > 0 && details.section.trim().length <= 32 &&
+    (details.department === undefined || (typeof details.department === "string" && details.department.trim().length > 0 && details.department.trim().length <= 120)) &&
     mongoose.isValidObjectId(details.faculty) &&
     mongoose.isValidObjectId(details.room) &&
     validDays.includes(details.day) &&
@@ -50,7 +51,7 @@ function hasValidClassDetails(details) {
 }
 
 async function validateAssignments(details, session) {
-  const faculty = await User.findOne({ _id: details.faculty, role: "faculty" }).select("_id").session(session).lean();
+  const faculty = await User.findOne({ _id: details.faculty, role: "faculty" }).select("_id department").session(session).lean();
   const room = await Room.findById(details.room).session(session);
   const enrolledStudents = [...new Set(details.enrolledStudents || [])];
   const maxEnrollment = Number(details.maxEnrollment);
@@ -61,6 +62,9 @@ async function validateAssignments(details, session) {
 
   if (!faculty) {
     return { error: "Select an existing faculty account" };
+  }
+  if (details.department && details.department.trim() !== (faculty.department || "")) {
+    return { error: "Class department must match the assigned faculty member's department" };
   }
 
   if (!room) {
@@ -104,7 +108,7 @@ async function validateAssignments(details, session) {
     return { error: "Enrollment exceeds the class capacity" };
   }
 
-  return { enrolledStudents, maxEnrollment };
+  return { enrolledStudents, maxEnrollment, department: details.department?.trim() || faculty.department || null };
 }
 
 async function findScheduleConflict(details, excludedId, session) {
@@ -281,6 +285,7 @@ async function createClass(req, res) {
         courseName: body.courseName.trim(),
         courseCode: body.courseCode.trim().toUpperCase(),
         section: body.section.trim(),
+        department: assignments.department,
         faculty: body.faculty,
         room: body.room,
         day: body.day,
@@ -363,6 +368,7 @@ async function updateClass(req, res) {
         courseName: body.courseName.trim(),
         courseCode: body.courseCode.trim().toUpperCase(),
         section: body.section.trim(),
+        department: assignments.department,
         faculty: body.faculty,
         room: body.room,
         day: body.day,

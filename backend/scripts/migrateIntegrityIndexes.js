@@ -11,6 +11,7 @@ const attendanceIndexOptions = {
 const supportingIndexes = [
   { key: { student: 1, date: -1 }, name: "student_1_date_-1" },
   { key: { campusClass: 1, date: -1 }, name: "campusClass_1_date_-1" },
+  { key: { date: 1, status: 1 }, name: "date_1_status_1" },
 ];
 const integrityIndexes = [
   { collection: "campusclasses", key: { room: 1 }, name: "room_1" },
