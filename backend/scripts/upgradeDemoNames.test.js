@@ -1,9 +1,12 @@
 const test = require("node:test");
 const assert = require("node:assert/strict");
+const path = require("path");
+const os = require("os");
+const { spawnSync } = require("child_process");
 const { demoPersonName, legacyDemoPersonName } = require("../utils/demoNames");
 const {
-  ROLE_SPECS, assertInstitutionalAccounts, buildNameChanges, canonicalBookingPlan,
-  parseMode, runAtomic, runDryRun, validateTarget,
+  ENV_PATH, ROLE_SPECS, assertInstitutionalAccounts, buildNameChanges, canonicalBookingPlan,
+  parseMode, runAtomic, runDryRun, runMigration, validateTarget, withConnectedDatabase,
 } = require("./upgradeDemoNames");
 
 function accountFixture() {
@@ -65,6 +68,90 @@ test("default and explicit modes choose a read-only preview unless --apply is su
   assert.doesNotThrow(() => validateTarget("mongodb://127.0.0.1:27017/campusos_demo_v2?replicaSet=rs0"));
   assert.throws(() => validateTarget("mongodb://127.0.0.1:27017/campusos_demo"));
   assert.throws(() => validateTarget("mongodb://example.invalid/campusos_demo_v2"));
+  assert.throws(() => validateTarget("mongodb://127.0.0.1:27017/campusos_demo_v2"));
+});
+
+test("backend .env loads from its script-relative path when launched from another directory", () => {
+  const scriptPath = path.resolve(__dirname, "upgradeDemoNames.js");
+  const childSource = `
+    const migration = require(${JSON.stringify(scriptPath)});
+    const uri = process.env.MONGO_URI;
+    const parsed = uri ? new URL(uri) : null;
+    console.log(JSON.stringify({
+      envPath: migration.ENV_PATH,
+      database: parsed ? decodeURIComponent(parsed.pathname.replace(/^\\//, '')).split('/')[0] : null,
+      replicaSet: parsed && parsed.searchParams.get('replicaSet'),
+    }));
+  `;
+  const childEnv = { ...process.env };
+  delete childEnv.MONGO_URI;
+  const result = spawnSync(process.execPath, ["-e", childSource], { cwd: os.tmpdir(), env: childEnv, encoding: "utf8" });
+  assert.equal(result.status, 0, result.stderr);
+  const loaded = JSON.parse(result.stdout.trim());
+  assert.equal(loaded.envPath, path.resolve(__dirname, "../.env"));
+  assert.equal(loaded.database, "campusos_demo_v2");
+  assert.equal(loaded.replicaSet, "rs0");
+});
+
+test("migration refuses database operations until mongoose is connected", async () => {
+  let operationCount = 0;
+  await assert.rejects(
+    withConnectedDatabase({ readyState: 0, db: null }, async () => { operationCount += 1; }),
+    /not connected/,
+  );
+  assert.equal(operationCount, 0);
+});
+
+test("runMigration awaits a connected campusos_demo_v2 rs0 client before planning", async () => {
+  const events = [];
+  const client = {
+    connection: {
+      readyState: 0,
+      name: "campusos_demo_v2",
+      db: { admin: () => ({ command: async () => { events.push("hello"); return { setName: "rs0", logicalSessionTimeoutMinutes: 30 }; } }) },
+      async asPromise() { events.push("ready"); this.readyState = 1; },
+    },
+    async connect(uri, options) {
+      events.push("connect");
+      assert.match(uri, /campusos_demo_v2\?replicaSet=rs0/);
+      assert.equal(options.autoIndex, false);
+      assert.equal(options.autoCreate, false);
+      this.connection.readyState = 2;
+    },
+    async startSession() { throw new Error("dry-run must not start a transaction"); },
+    async disconnect() { events.push("disconnect"); this.connection.readyState = 0; },
+  };
+  const report = await runMigration({
+    mode: "dry-run",
+    uri: "mongodb://127.0.0.1:27017/campusos_demo_v2?replicaSet=rs0",
+    mongooseClient: client,
+    nodeEnv: "test",
+    makePlan: async () => {
+      events.push("database-operation");
+      assert.equal(client.connection.readyState, 1);
+      return { database: "campusos_demo_v2", countsByRole: {}, nameChanges: [], bookingChanges: [], activityChanges: [], uniqueNames: {} };
+    },
+    executePlan: async () => { throw new Error("dry-run must not call the writer"); },
+  });
+  assert.equal(report.dryRunPerformedZeroWrites, true);
+  assert.deepEqual(events, ["connect", "ready", "hello", "database-operation", "disconnect"]);
+});
+
+test("runMigration disconnects in finally when connection setup fails", async () => {
+  let disconnected = false;
+  const client = {
+    connection: { readyState: 0, name: "", db: null },
+    async connect() { throw new Error("simulated connection failure"); },
+    async disconnect() { disconnected = true; },
+  };
+  await assert.rejects(runMigration({
+    mode: "dry-run",
+    uri: "mongodb://127.0.0.1:27017/campusos_demo_v2?replicaSet=rs0",
+    mongooseClient: client,
+    nodeEnv: "test",
+    makePlan: async () => { throw new Error("planning must not begin"); },
+  }), /simulated connection failure/);
+  assert.equal(disconnected, true);
 });
 
 test("dry-run plans and reports without invoking a writer", async () => {

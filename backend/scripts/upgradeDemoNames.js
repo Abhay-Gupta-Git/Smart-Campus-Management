@@ -1,5 +1,6 @@
 const path = require("path");
-require("dotenv").config({ path: path.resolve(__dirname, "../.env") });
+const ENV_PATH = path.resolve(__dirname, "../.env");
+require("dotenv").config({ path: ENV_PATH });
 
 const mongoose = require("mongoose");
 const User = require("../models/User");
@@ -38,9 +39,21 @@ function validateTarget(uri) {
   try { parsed = new URL(uri); } catch { throw new Error("MONGO_URI is not a valid MongoDB URL."); }
   const database = decodeURIComponent(parsed.pathname.replace(/^\//, "")).split("/")[0];
   const host = parsed.hostname.toLowerCase().replace(/^\[|\]$/g, "");
-  if (database !== EXPECTED_DB || !["localhost", "127.0.0.1", "::1"].includes(host)) {
-    throw new Error(`Refusing to connect: only a loopback URI for exactly ${EXPECTED_DB} is accepted.`);
+  if (database !== EXPECTED_DB || !["localhost", "127.0.0.1", "::1"].includes(host) ||
+    parsed.searchParams.get("replicaSet") !== EXPECTED_REPLICA_SET) {
+    throw new Error(`Refusing to connect: URI must target loopback ${EXPECTED_DB} with replicaSet=${EXPECTED_REPLICA_SET}.`);
   }
+}
+
+function assertConnected(connection = mongoose.connection) {
+  if (connection.readyState !== 1 || !connection.db) {
+    throw new Error("MongoDB is not connected; refusing to start migration validation or database operations.");
+  }
+}
+
+async function withConnectedDatabase(connection, operation) {
+  assertConnected(connection);
+  return operation();
 }
 
 function idString(value) { return value == null ? "" : value.toString(); }
@@ -268,6 +281,7 @@ async function validateReferences(session) {
 }
 
 async function validateAndPlan(session) {
+  return withConnectedDatabase(mongoose.connection, async () => {
   const counts = {};
   for (const [Model, expected] of COLLECTION_COUNTS) {
     const countQuery = Model.countDocuments({});
@@ -299,6 +313,7 @@ async function validateAndPlan(session) {
     activityChanges: bookingPlan.activityChanges,
     uniqueNames,
   };
+  });
 }
 
 function safeReport(plan, mode, { writes = 0, alreadyComplete = false } = {}) {
@@ -372,36 +387,52 @@ async function applyPlan(plan, session) {
   return writes;
 }
 
-async function runMigration({ mode = "dry-run", uri = process.env.MONGO_URI } = {}) {
-  if (process.env.NODE_ENV === "production") throw new Error("Demo name upgrades are disabled in production.");
-  if (!new Set(["dry-run", "apply"]).has(mode)) throw new Error("Choose exactly one supported mode: --dry-run or --apply.");
+async function connectTargetDatabase(client, uri) {
   validateTarget(uri);
-  // Disable Mongoose's automatic collection/index creation so even preview mode is read-only.
-  await mongoose.connect(uri, { serverSelectionTimeoutMS: 5000, autoIndex: false, autoCreate: false });
+  await client.connect(uri, { serverSelectionTimeoutMS: 5000, autoIndex: false, autoCreate: false });
+  const connection = client.connection;
+  if (typeof connection.asPromise === "function") await connection.asPromise();
+  assertConnected(connection);
+  if (connection.name !== EXPECTED_DB) throw new Error(`Connected database was not ${EXPECTED_DB}.`);
+  const hello = await connection.db.admin().command({ hello: 1 });
+  if (hello.setName !== EXPECTED_REPLICA_SET || !hello.logicalSessionTimeoutMinutes) {
+    throw new Error(`Requires replica set ${EXPECTED_REPLICA_SET} with transaction support; no changes were applied.`);
+  }
+  return connection;
+}
+
+async function runMigration({ mode = "dry-run", uri = process.env.MONGO_URI, mongooseClient = mongoose,
+  makePlan = validateAndPlan, executePlan = applyPlan, nodeEnv = process.env.NODE_ENV } = {}) {
+  if (nodeEnv === "production") throw new Error("Demo name upgrades are disabled in production.");
+  if (!new Set(["dry-run", "apply"]).has(mode)) throw new Error("Choose exactly one supported mode: --dry-run or --apply.");
+  let migrationError;
   try {
-    if (mongoose.connection.name !== EXPECTED_DB) throw new Error(`Connected database was not ${EXPECTED_DB}.`);
-    const hello = await mongoose.connection.db.admin().command({ hello: 1 });
-    if (hello.setName !== EXPECTED_REPLICA_SET || !hello.logicalSessionTimeoutMinutes) {
-      throw new Error(`Requires replica set ${EXPECTED_REPLICA_SET} with transaction support; no changes were applied.`);
-    }
+    await connectTargetDatabase(mongooseClient, uri);
     if (mode === "dry-run") {
-      return runDryRun(() => validateAndPlan(null));
+      return runDryRun(() => makePlan(null));
     }
-    const session = await mongoose.startSession();
+    const session = await mongooseClient.startSession();
     let report;
     try {
       await runAtomic(session, async () => {
         // All canonical validation and change planning completes before the first write, inside the transaction snapshot.
-        const plan = await validateAndPlan(session);
-        const writes = await applyPlan(plan, session);
+        const plan = await makePlan(session);
+        const writes = await executePlan(plan, session);
         report = safeReport(plan, mode, { writes, alreadyComplete: writes === 0 });
       });
     } finally {
       await session.endSession();
     }
     return report;
+  } catch (error) {
+    migrationError = error;
+    throw error;
   } finally {
-    await mongoose.disconnect();
+    try {
+      await mongooseClient.disconnect();
+    } catch (disconnectError) {
+      if (!migrationError) throw disconnectError;
+    }
   }
 }
 
@@ -424,6 +455,7 @@ if (require.main === module) {
 }
 
 module.exports = {
-  EXPECTED_DB, ROLE_SPECS, assertInstitutionalAccounts, canonicalBookingPlan, parseMode,
-  buildNameChanges, runAtomic, runDryRun, runMigration, safeReport, validateReferences, validateTarget,
+  ENV_PATH, EXPECTED_DB, ROLE_SPECS, assertInstitutionalAccounts, assertConnected, canonicalBookingPlan,
+  connectTargetDatabase, parseMode, buildNameChanges, runAtomic, runDryRun, runMigration,
+  safeReport, validateReferences, validateTarget, withConnectedDatabase,
 };
