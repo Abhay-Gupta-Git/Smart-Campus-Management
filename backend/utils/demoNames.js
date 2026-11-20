@@ -28,7 +28,10 @@ const SURNAMES = [
   "Mathew", "Mohan", "Narayan", "Purohit", "Ranganathan", "Sarkar", "Thampi", "Upadhyay", "Venkatesh", "Wagle",
 ];
 
-const MIDDLE_NAMES = [
+// Existing campusos_demo_v2 accounts were seeded with this deterministic form.
+// It is retained only so the migration can reject edited source names; new names
+// continue to be generated without middle names by demoPersonName().
+const LEGACY_MIDDLE_NAMES = [
   "Anand", "Chandra", "Dev", "Kiran", "Kumar", "Mohan", "Narayan", "Prakash", "Raj", "Ravi",
   "Shankar", "Vijay", "Asha", "Devi", "Lakshmi", "Priya", "Rani", "Sai", "Sree", "Vani",
   "Arun", "Bala", "Harish", "Nath", "Om", "Raghav", "Sanjay", "Surya", "Venkata", "Vishal",
@@ -43,7 +46,16 @@ function demoPersonName(index, group = "student") {
   const shuffled = (index * NAME_MULTIPLIER + groupOffset) % NAME_SPACE;
   const first = FIRST_NAMES[Math.floor(shuffled / SURNAMES.length)];
   const surname = SURNAMES[shuffled % SURNAMES.length];
-  const middle = MIDDLE_NAMES[(shuffled * 17 + index * 13 + groupOffset) % MIDDLE_NAMES.length];
+  return `${first} ${surname}`;
+}
+
+function legacyDemoPersonName(index, group = "student") {
+  if (!Number.isInteger(index) || index < 0) throw new RangeError("Demo name index must be a non-negative integer.");
+  const groupOffset = group === "faculty" ? 2711 : group === "technician" ? 5939 : 0;
+  const shuffled = (index * NAME_MULTIPLIER + groupOffset) % NAME_SPACE;
+  const first = FIRST_NAMES[Math.floor(shuffled / SURNAMES.length)];
+  const surname = SURNAMES[shuffled % SURNAMES.length];
+  const middle = LEGACY_MIDDLE_NAMES[(shuffled * 17 + index * 13 + groupOffset) % LEGACY_MIDDLE_NAMES.length];
   const useMiddle = (shuffled + index * 7 + groupOffset) % 3 !== 0;
   return `${first}${useMiddle ? ` ${middle}` : ""} ${surname}`;
 }
@@ -57,4 +69,4 @@ function validateDemoNameUniqueness() {
   }));
 }
 
-module.exports = { demoPersonName, validateDemoNameUniqueness };
+module.exports = { demoPersonName, legacyDemoPersonName, validateDemoNameUniqueness };
