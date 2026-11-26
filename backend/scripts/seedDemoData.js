@@ -21,7 +21,7 @@ const BUILDINGS = [
   "Vikram Sarabhai Academic Block",
   "Homi Bhabha Science Centre",
   "Nalanda Library and Learning Centre",
-  "Savitribai Phule Arts Block",
+  "Savitribai Phule Arts  Block",
   "Sardar Patel Student Centre",
   "A.P.J. Abdul Kalam Engineering Complex",
 ];
