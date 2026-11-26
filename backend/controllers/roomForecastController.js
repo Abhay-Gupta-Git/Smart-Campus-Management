@@ -63,7 +63,7 @@ function demandLabel(values, index) {
 
 async function getRoomForecast(req, res) {
   const today = new Date();
-  today.setUTCHours(0, 0, 0, 0);
+  today.setUTCHours(0, 0, 0,0);
   const historyStart = new Date(today);
   historyStart.setUTCDate(historyStart.getUTCDate() - HISTORY_DAYS);
   const forecastStart = new Date(today);
