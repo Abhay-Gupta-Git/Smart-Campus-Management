@@ -109,7 +109,7 @@ async function recommendRooms(req, res) {
     return res.json({
       recommendations,
       count: recommendations.length,
-      message: recommendations.length ? undefined : "No suitable room is available for this time slot.",
+      message: recommendations.length ? undefined : "No suitable room  is available for this time slot.",
     });
   } catch (error) {
     console.error("Room recommendation error:", error.name || "Error");
