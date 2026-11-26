@@ -8,7 +8,6 @@ const minimumPasswordLength = MIN_PASSWORD_LENGTH;
 
 function hasUnsupportedFields(body) {
   const allowedFields = new Set(["email", "name", "password"]);
-
   return Object.keys(body).some((field) => !allowedFields.has(field));
 }
 
