@@ -76,7 +76,7 @@ router.get("/", async (req, res) => {
       .sort(sort)
       .lean();
     if (!pagination) query.limit(200);
-    const activities = await executeListQuery({ query, Model: ActivityLog, filter, pagination, res });
+    const activities =  await executeListQuery({ query, Model: ActivityLog, filter, pagination, res });
     return res.json(activities);
   } catch (error) {
     console.error("Activity history request failed:", error.name || "Error");
