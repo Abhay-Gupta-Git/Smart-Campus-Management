@@ -33,7 +33,7 @@ async function listFaculty(req, res) {
 
     return res.json(faculty);
   } catch (error) {
-    return res.status(500).json({ message: "Failed to load faculty" });
+    return res.status(500).json({ message: "Failed to  load faculty" });
   }
 }
 
